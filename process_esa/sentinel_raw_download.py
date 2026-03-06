@@ -2,36 +2,38 @@ import os
 from terracatalogueclient import Catalogue
 from shapely.geometry import Polygon
 
-OUT_DIR = "S2_RGB_only"
-os.makedirs(OUT_DIR, exist_ok=True)
 
-catalogue = Catalogue().authenticate()
+if __name__ == "__main__":
+    OUT_DIR = "S2_RGB_no_clouds"
+    os.makedirs(OUT_DIR, exist_ok=True)
 
-bounds = (10.95, 49.38, 11.15, 49.52)
-geometry = Polygon.from_bounds(*bounds)
+    catalogue = Catalogue().authenticate()
 
-products = list(catalogue.get_products(
-    "urn:eop:VITO:TERRASCOPE_S2_TOC_V2",
-    start="2020-01-01",
-    end="2023-01-01",
-    geometry=geometry,
-    cloudCover=30,
-    limit=200
-))
+    bounds = (10.95, 49.38, 11.15, 49.52)
+    geometry = Polygon.from_bounds(*bounds)
 
-KEEP = ["TOC-B02_10M", "TOC-B03_10M", "TOC-B04_10M"]  # Blue, Green, Red
+    products = list(catalogue.get_products(
+        "urn:eop:VITO:TERRASCOPE_S2_TOC_V2",
+        start="2020-01-01",
+        end="2021-12-31",
+        geometry=geometry,
+        cloudCover=5,
+        limit=200
+    ))
 
-print("Found:", len(products))
+    KEEP = ["TOC-B02_10M", "TOC-B03_10M", "TOC-B04_10M"]  # Blue, Green, Red
 
-for p in products:
-    ts = p.beginningDateTime.strftime("%Y%m%dT%H%M%S")
-    scene_dir = os.path.join(OUT_DIR, f"{p.id}__{ts}")
-    os.makedirs(scene_dir, exist_ok=True)
+    print("Found:", len(products))
 
-    # p.data = список файлов внутри продукта
-    for f in p.data:
-        name = f.title or os.path.basename(f.href)
-        if any(k in name for k in KEEP):
-            catalogue.download_file(f, scene_dir)
+    for p in products:
+        ts = p.beginningDateTime.strftime("%Y%m%dT%H%M%S")
+        scene_dir = os.path.join(OUT_DIR, f"{p.id}__{ts}")
+        os.makedirs(scene_dir, exist_ok=True)
 
-    print("Downloaded RGB for:", p.id, ts)
+        # p.data = список файлов внутри продукта
+        for f in p.data:
+            name = f.title or os.path.basename(f.href)
+            if any(k in name for k in KEEP):
+                catalogue.download_file(f, scene_dir)
+
+        print("Downloaded RGB for:", p.id, ts)
