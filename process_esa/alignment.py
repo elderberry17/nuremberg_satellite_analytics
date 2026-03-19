@@ -1,98 +1,229 @@
-import os
-import re
-import glob
+import shutil
+from pathlib import Path
+
 import numpy as np
 import rasterio
-from rasterio.warp import reproject, Resampling
-import matplotlib.pyplot as plt
+from rasterio.warp import reproject
+
+import alignment_config as cfg
 
 
-COLOR_MAP = {
-    10: (0.0, 0.4, 0.0),
-    20: (0.4, 0.8, 0.0),
-    30: (0.6, 1.0, 0.6),
-    40: (1.0, 1.0, 0.0),
-    50: (0.8, 0.0, 0.0),
-    60: (0.8, 0.6, 0.4),
-    80: (0.0, 0.0, 1.0),
-    90: (0.0, 0.6, 0.8),
-    95: (0.0, 0.8, 0.6),
-    100:(1.0, 1.0, 1.0),
-}
+def make_parent(path: Path):
+    path.parent.mkdir(parents=True, exist_ok=True)
 
-def wc_path_for_timestamp(ts: str) -> str:
-    year = int(ts[:4])
-    if year == 2020:
-        return WC2020
-    if year == 2021:
-        return WC2021
-    raise ValueError(f"No WorldCover configured for year={year}")
 
-def labels_to_rgb(labels: np.ndarray) -> np.ndarray:
-    h, w = labels.shape
-    rgb = np.zeros((h, w, 3), dtype=np.float32)
-    for v, c in COLOR_MAP.items():
-        rgb[labels == v] = c
-    return rgb
+def get_grid_info(tif_path: Path):
+    with rasterio.open(tif_path) as src:
+        return {
+            "crs": src.crs,
+            "transform": src.transform,
+            "width": src.width,
+            "height": src.height,
+        }
 
-if __name__ == "__main__":
-    ROOT_DIR = "S2_RGB_no_clouds"  # scences directories
-    WC2020 = "WorldCover_labels_2020/ESA_WorldCover_10m_2020_v100_N48E009/ESA_WorldCover_10m_2020_v100_N48E009_Map.tif"
-    WC2021 = "WorldCover_labels_2021/ESA_WorldCover_10m_2021_v200_N48E009/ESA_WorldCover_10m_2021_v200_N48E009_Map.tif"
 
-    # directories timestamps
-    TS_RE = re.compile(r"__(\d{8}T\d{6})$")
+def choose_default_nodata(dtype_str, nodata):
+    if nodata is not None:
+        return nodata
 
-    scene_dirs = sorted([p for p in glob.glob(os.path.join(ROOT_DIR, "*")) if os.path.isdir(p)])
-    print("Scenes:", len(scene_dirs))
+    dtype = np.dtype(dtype_str)
+    if np.issubdtype(dtype, np.floating):
+        return np.nan
+    return 0
 
-    for scene_dir in scene_dirs:
-        folder = os.path.basename(scene_dir)
-        m = TS_RE.search(folder)
-        if not m:
-            print("[SKIP] can't parse ts:", folder)
-            continue
-        ts = m.group(1)
 
-        ref_tif = glob.glob(os.path.join(scene_dir, "*__RGB_cropped.tif"))
-        if not ref_tif:
-            print("[SKIP] no RGB_cropped.tif in:", folder)
-            continue
-        ref_tif = ref_tif[0]
+def same_grid(path_a: Path, path_b: Path, atol=1e-9) -> bool:
+    with rasterio.open(path_a) as a, rasterio.open(path_b) as b:
+        if a.crs != b.crs:
+            return False
+        if a.width != b.width or a.height != b.height:
+            return False
+        return all(abs(x - y) < atol for x, y in zip(a.transform, b.transform))
 
-        wc_tif = wc_path_for_timestamp(ts)
 
-        # --- open reference RGB crop ---
-        with rasterio.open(ref_tif) as ref:
-            ref_crs = ref.crs
-            ref_transform = ref.transform
-            ref_h, ref_w = ref.height, ref.width
+def reproject_raster(
+    src_path: Path,
+    dst_path: Path,
+    dst_crs,
+    dst_transform,
+    dst_width,
+    dst_height,
+    resampling,
+    dst_dtype=None,
+    dst_nodata=None,
+):
+    with rasterio.open(src_path) as src:
+        src_count = src.count
+        src_dtype = src.dtypes[0]
 
-            # --- open worldcover ---
-            with rasterio.open(wc_tif) as wc:
-                src_labels = wc.read(1)
+        if dst_dtype is None:
+            dst_dtype = src_dtype
 
-                dst_labels = np.zeros((ref_h, ref_w), dtype=np.uint16)
+        if dst_nodata is None:
+            dst_nodata = choose_default_nodata(dst_dtype, src.nodata)
+
+        meta = src.meta.copy()
+        meta.update(
+            {
+                "driver": "GTiff",
+                "crs": dst_crs,
+                "transform": dst_transform,
+                "width": dst_width,
+                "height": dst_height,
+                "count": src_count,
+                "dtype": dst_dtype,
+                "nodata": dst_nodata,
+            }
+        )
+
+        make_parent(dst_path)
+
+        with rasterio.open(dst_path, "w", **meta) as dst:
+            for band_idx in range(1, src_count + 1):
+                dst_arr = np.full((dst_height, dst_width), dst_nodata, dtype=dst_dtype)
 
                 reproject(
-                    source=src_labels,
-                    destination=dst_labels,
-                    src_transform=wc.transform,
-                    src_crs=wc.crs,
-                    dst_transform=ref_transform,
-                    dst_crs=ref_crs,
-                    resampling=Resampling.nearest,  # IMPORTANT for labels
+                    source=rasterio.band(src, band_idx),
+                    destination=dst_arr,
+                    src_transform=src.transform,
+                    src_crs=src.crs,
+                    src_nodata=src.nodata,
+                    dst_transform=dst_transform,
+                    dst_crs=dst_crs,
+                    dst_nodata=dst_nodata,
+                    resampling=resampling,
                 )
+                dst.write(dst_arr, band_idx)
 
-            # save aligned label GeoTIFF
-            out_label_tif = os.path.join(scene_dir, f"{folder}__label_aligned.tif")
-            meta = ref.meta.copy()
-            meta.update({"count": 1, "dtype": "uint16"})
-            with rasterio.open(out_label_tif, "w", **meta) as dst:
-                dst.write(dst_labels, 1)
 
-        # save colored PNG for quick look (same HxW as RGB crop)
-        out_label_png = os.path.join(scene_dir, f"{folder}__label_aligned.png")
-        plt.imsave(out_label_png, labels_to_rgb(dst_labels))
+def align_label_maps():
+    """
+    WC2020 is the canonical grid.
+    Result:
+      - WC2020 aligned copy (or original if overwrite)
+      - WC2021 reprojected to WC2020 grid
+    """
+    master = get_grid_info(cfg.MASTER_GRID_PATH)
 
-        print("[OK]", folder, "->", out_label_tif)
+    wc2020_out = cfg.WC2020 if cfg.OVERWRITE else cfg.WC2020.parent / cfg.WC2020_ALIGNED_NAME
+    wc2021_out = cfg.WC2021 if cfg.OVERWRITE else cfg.WC2021.parent / cfg.WC2021_ALIGNED_NAME
+
+    # WC2020 is already on master grid
+    if not cfg.OVERWRITE:
+        if wc2020_out.exists() and cfg.SKIP_IF_EXISTS:
+            print(f"[SKIP] exists: {wc2020_out}")
+        else:
+            make_parent(wc2020_out)
+            shutil.copy2(cfg.WC2020, wc2020_out)
+            print(f"[OK] copied master label: {wc2020_out}")
+
+    # WC2021 -> WC2020 grid
+    if wc2021_out.exists() and cfg.SKIP_IF_EXISTS:
+        print(f"[SKIP] exists: {wc2021_out}")
+    else:
+        reproject_raster(
+            src_path=cfg.WC2021,
+            dst_path=wc2021_out,
+            dst_crs=master["crs"],
+            dst_transform=master["transform"],
+            dst_width=master["width"],
+            dst_height=master["height"],
+            resampling=cfg.LABEL_RESAMPLING,
+            dst_dtype="uint16",
+            dst_nodata=0,
+        )
+        print(f"[OK] aligned WC2021 -> {wc2021_out}")
+
+    # Sanity check
+    wc2020_check = cfg.WC2020 if cfg.OVERWRITE else wc2020_out
+    if same_grid(wc2020_check, wc2021_out):
+        print("[OK] WC2020 and WC2021 are now on the same grid")
+    else:
+        print("[WARN] WC2020 and WC2021 are still not identical in grid")
+
+
+def should_process_band(path: Path) -> bool:
+    name = path.name
+
+    if cfg.SKIP_DERIVED_FILES:
+        if cfg.RAW_SUFFIX in name:
+            return False
+        if "_aligned" in name:
+            return False
+
+    if cfg.BAND_FILENAME_MUST_CONTAIN is not None:
+        if not any(token in name for token in cfg.BAND_FILENAME_MUST_CONTAIN):
+            return False
+
+    return True
+
+
+def build_output_path(src_path: Path) -> Path:
+    if cfg.OVERWRITE:
+        return src_path
+
+    return src_path.with_name(f"{src_path.stem}{cfg.RAW_SUFFIX}{src_path.suffix}")
+
+
+def align_scene_bands():
+    """
+    Reproject every raw band in every scene folder to the canonical label grid.
+    """
+    master = get_grid_info(cfg.MASTER_GRID_PATH)
+
+    scene_dirs = sorted([p for p in cfg.SCENES_ROOT.iterdir() if p.is_dir()])
+    print(f"Found {len(scene_dirs)} scene directories")
+
+    total_processed = 0
+    total_skipped = 0
+
+    for scene_dir in scene_dirs:
+        # if str(scene_dir).endswith('20200426T101549') or str(scene_dir).endswith('20200913T101629'):
+
+        tif_files = sorted(scene_dir.glob(cfg.BAND_GLOB))
+        tif_files = [p for p in tif_files if should_process_band(p)]
+
+        if not tif_files:
+            print(f"[SKIP] no matching tif files in {scene_dir.name}")
+            continue
+
+        print(f"\nScene: {scene_dir.name}")
+
+        for tif_path in tif_files:
+            out_path = build_output_path(tif_path)
+
+            if out_path.exists() and cfg.SKIP_IF_EXISTS:
+                print(f"  [SKIP] exists: {out_path.name}")
+                total_skipped += 1
+                continue
+
+            try:
+                reproject_raster(
+                    src_path=tif_path,
+                    dst_path=out_path,
+                    dst_crs=master["crs"],
+                    dst_transform=master["transform"],
+                    dst_width=master["width"],
+                    dst_height=master["height"],
+                    resampling=cfg.RAW_RESAMPLING,
+                )
+                print(f"  [OK] {tif_path.name} -> {out_path.name}")
+                total_processed += 1
+            except Exception as e:
+                print(f"  [ERR] {tif_path.name}: {e}")
+
+    print("\nDone.")
+    print(f"Processed: {total_processed}")
+    print(f"Skipped:   {total_skipped}")
+
+
+def main():
+    print("=== STEP 1: Align label maps ===")
+    align_label_maps()
+
+    print("\n=== STEP 2: Align raw scene bands ===")
+    align_scene_bands()
+
+
+if __name__ == "__main__":
+    main()
