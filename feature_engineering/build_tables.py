@@ -134,19 +134,6 @@ def rgb_to_label_id(label_rgb: np.ndarray):
 
     return f"{vals[0]}_{vals[1]}_{vals[2]}"
 
-def rgb_to_label_id(label_rgb: np.ndarray):
-    """
-    Convert RGB triplet into a stable string label.
-    Good first baseline if labels are color-coded classes.
-    """
-    # If image values are float in [0,1], map to 0..255
-    if np.issubdtype(label_rgb.dtype, np.floating):
-        vals = np.round(label_rgb * 255).astype(int)
-    else:
-        vals = label_rgb.astype(int)
-
-    return f"{vals[0]}_{vals[1]}_{vals[2]}"
-
 
 def estimate_num_rows(
     num_images: int,
@@ -479,15 +466,14 @@ def image_pair_to_table_distributed(
 def extract_window_distribution(window: np.ndarray):
     h, w, _ = window.shape
     total_pixels = h * w
-
-    # Flatten pixels
-    pixels = window.reshape(-1, 3)
+    
+    # Flatten pixels and map them into 0-255
+    pixels = (window.reshape(-1, 3) * 255).astype(int)
     rgb_strings = np.array([f"{r}_{g}_{b}" for r, g, b in pixels])
-
     labels = np.array([RGB_STR2LABEL_STR.get(k, "unknown") for k in rgb_strings])
-
-    urban = np.isin(labels, GROUPS["urban"]).sum()
+    
     water = np.isin(labels, GROUPS["water"]).sum()
+    urban = np.isin(labels, GROUPS["urban"]).sum()
     vegetation = np.isin(labels, GROUPS["vegetation"]).sum()
 
     return np.array([
