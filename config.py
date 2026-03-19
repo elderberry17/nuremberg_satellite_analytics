@@ -18,7 +18,7 @@ WC_GROUPS = {
     "vegetation": {10, 20, 30, 40, 60, 100},
 }
 
-FEATURE_COLS = [
+FEATURE_COLS_BASELINE = [
     'x', 'y', 'x_norm', 'y_norm',
     'year', 'month', 'day', 'day_of_year', 'doy_sin', 'doy_cos',
     'center_b02', 'mean_b02', 'std_b02', 'min_b02', 'max_b02', 'center_b03',
@@ -27,3 +27,12 @@ FEATURE_COLS = [
     'min_b08', 'max_b08', 'center_b11', 'mean_b11', 'std_b11', 'min_b11',
     'max_b11'
 ]
+
+FEATURE_COLS_BASELINE_EXTENDED = ['x', 'y', 'x_norm', 'y_norm',
+       'year', 'month', 'day', 'day_of_year', 'doy_sin', 'doy_cos',
+       'center_b02', 'mean_b02', 'std_b02', 'min_b02', 'max_b02', 'center_b03',
+       'mean_b03', 'std_b03', 'min_b03', 'max_b03', 'center_b04', 'mean_b04',
+       'std_b04', 'min_b04', 'max_b04', 'center_b08', 'mean_b08', 'std_b08',
+       'min_b08', 'max_b08', 'center_b11', 'mean_b11', 'std_b11', 'min_b11',
+       'max_b11', 'mean_NIR', 'mean_SWIR', 'mean_NDVI', 'mean_NDBI',
+       'std_NDVI']
