@@ -2,7 +2,7 @@ import matplotlib.image as mpimg
 import os
 import matplotlib.pyplot as plt
 import numpy as np
-from config import DIRS2USE
+from config import DIRS2USE, RGB_STR2LABEL_STR, GROUPS
 from pathlib import Path
 import pandas as pd
 import re
@@ -48,6 +48,7 @@ def encode_time_features(dt: pd.Timestamp):
 
 
 def find_image_paths(folder: Path):
+    # folder = Path("../process_esa") / folder 
     cropped = list(folder.glob("*_cropped.png"))
     aligned = list(folder.glob("*_label_aligned.png"))
 
@@ -319,6 +320,7 @@ def build_split_table(
     kernel_size: int = 3,
     keep_borders: bool = True,
     stride: int = 0,
+    distribution: bool = True,
 ):
     """
     Takes items: [{folder_name: img_name}] to build the dataset from.
@@ -334,18 +336,162 @@ def build_split_table(
 
     for item in items:
         print(f"Processing {item['image_id']} ...")
-        df_img = image_pair_to_table(
-            cropped_path=item["cropped_path"],
-            aligned_path=item["aligned_path"],
-            image_id=item["image_id"],
-            timestamp=item["timestamp"],
-            kernel_size=kernel_size,
-            keep_borders=keep_borders,
-            stride=stride,
-        )
+        if distribution:
+            df_img = image_pair_to_table_distributed(
+                cropped_path=item["cropped_path"],
+                aligned_path=item["aligned_path"],
+                image_id=item["image_id"],
+                timestamp=item["timestamp"],
+                kernel_size=kernel_size,
+                keep_borders=keep_borders,
+                stride=stride,
+            )
+        else:
+            df_img = image_pair_to_table(
+                cropped_path=item["cropped_path"],
+                aligned_path=item["aligned_path"],
+                image_id=item["image_id"],
+                timestamp=item["timestamp"],
+                kernel_size=kernel_size,
+                keep_borders=keep_borders,
+                stride=stride,
+            )
         dfs.append(df_img)
 
     if not dfs:
         return pd.DataFrame()
 
     return pd.concat(dfs, ignore_index=True)
+
+
+def image_pair_to_table_distributed(
+    cropped_path: str,
+    aligned_path: str,
+    image_id: str,
+    timestamp: pd.Timestamp,
+    kernel_size: int = 3,
+    keep_borders: bool = True,
+    stride: int = 0,
+):
+    """
+    One image pair -> DataFrame with one row per valid pixel.
+    
+    Parameters:
+        kernel_size: size of NxN neighborhood
+        keep_borders: whether to use reflected padding for border pixels
+        stride:
+            0 or 1 -> use all pixels
+            k > 1  -> use every k-th pixel along x and y
+    """
+    if kernel_size % 2 == 0:
+        raise ValueError("kernel_size must be odd")
+
+    if stride < 0:
+        raise ValueError("stride must be >= 0")
+
+    step = 1 if stride in (0, 1) else stride
+
+    img = load_rgb_image(Path(cropped_path))
+    label_img = load_rgb_image(Path(aligned_path))
+
+    if img.shape[:2] != label_img.shape[:2]:
+        raise ValueError(
+            f"Image/label shape mismatch: {img.shape} vs {label_img.shape}"
+        )
+
+    H, W, _ = img.shape
+    radius = kernel_size // 2
+    time_feats = encode_time_features(timestamp)
+
+    if keep_borders:
+        img_padded = pad_image_reflect(img, radius)
+        label_padded = pad_image_reflect(label_img, radius)
+        y_range = range(0, H, step)
+        x_range = range(0, W, step)
+    else:
+        img_padded = img
+        label_padded = label_img
+        y_range = range(radius, H - radius, step)
+        x_range = range(radius, W - radius, step)
+
+    rows = []
+
+    for y in y_range:
+        for x in x_range:
+            # skip white center pixels in raw image
+            center_pixel = img[y, x, :]
+            if is_white_pixel(center_pixel, threshold=0.98):
+                continue
+
+            if keep_borders:
+                yp = y + radius
+                xp = x + radius
+
+                window = img_padded[
+                    yp - radius: yp + radius + 1,
+                    xp - radius: xp + radius + 1,
+                    :
+                ]
+
+                label_window = label_padded[
+                    yp - radius: yp + radius + 1,
+                    xp - radius: xp + radius + 1,
+                    :
+                ]
+            else:
+                window = img[
+                    y - radius: y + radius + 1,
+                    x - radius: x + radius + 1,
+                    :
+                ]
+
+                label_window = label_img[
+                    y - radius: y + radius + 1,
+                    x - radius: x + radius + 1,
+                    :
+                ]
+
+            feats = extract_window_features(window)
+            dist = extract_window_distribution(label_window)
+
+            row = {
+                "image_id": image_id,
+                "cropped_path": cropped_path,
+                "aligned_path": aligned_path,
+                "timestamp": timestamp.isoformat(),
+                "x": x,
+                "y": y,
+                "x_norm": x / (W - 1) if W > 1 else 0.0,
+                "y_norm": y / (H - 1) if H > 1 else 0.0,
+                "urban_prop": float(dist[0]),
+                "water_prop": float(dist[1]),
+                "vegetation_prop": float(dist[2]),
+                **time_feats,
+                **feats,
+            }
+
+            rows.append(row)
+
+    df = pd.DataFrame(rows)
+    return df
+
+
+def extract_window_distribution(window: np.ndarray):
+    h, w, _ = window.shape
+    total_pixels = h * w
+
+    # Flatten pixels
+    pixels = window.reshape(-1, 3)
+    rgb_strings = np.array([f"{r}_{g}_{b}" for r, g, b in pixels])
+
+    labels = np.array([RGB_STR2LABEL_STR.get(k, "unknown") for k in rgb_strings])
+
+    urban = np.isin(labels, GROUPS["urban"]).sum()
+    water = np.isin(labels, GROUPS["water"]).sum()
+    vegetation = np.isin(labels, GROUPS["vegetation"]).sum()
+
+    return np.array([
+        urban / total_pixels,
+        water / total_pixels,
+        vegetation / total_pixels
+    ])

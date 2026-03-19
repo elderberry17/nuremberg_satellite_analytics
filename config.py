@@ -50,3 +50,9 @@ FEATURE_COLS = [
 ]
 
 TARGET_COL = "label_id"
+
+GROUPS = {
+    "urban": ["built_up"],
+    "water": ["water_bodies", "herbaceous_wetland"],
+    "vegetation": ["tree_cover", "grassland", "moss_lichen", "shrubland"]
+}
