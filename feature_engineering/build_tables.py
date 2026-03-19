@@ -1,30 +1,81 @@
-import matplotlib.image as mpimg
-import os
-import matplotlib.pyplot as plt
-import numpy as np
-from config import DIRS2USE, RGB_STR2LABEL_STR, GROUPS
-from pathlib import Path
-import pandas as pd
-import re
 import math
+import re
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import rasterio
+from tqdm import tqdm
+
+from config import WC_GROUPS
+
+
+DEFAULT_BANDS = ["B02", "B03", "B04", "B08", "B11"]
+
+GROUP_TO_ID = {
+    "urban": 0,
+    "water": 1,
+    "vegetation": 2,
+}
+
+
+def build_wc_value_to_group(groups: dict[str, set[int]]):
+    """
+    Example:
+        {
+            "urban": {50},
+            "water": {80, 90, 95},
+            "vegetation": {10, 20, 30, 40, 60, 100},
+        }
+    ->
+        {
+            50: "urban",
+            80: "water",
+            ...
+        }
+    """
+    mapping = {}
+
+    for group_name, class_values in groups.items():
+        for value in class_values:
+            if value in mapping:
+                raise ValueError(f"Class value {value} is assigned to multiple groups")
+            mapping[int(value)] = group_name
+
+    return mapping
+
+
+WC_VALUE_TO_GROUP = build_wc_value_to_group(WC_GROUPS)
+
+
+def wc_label_to_group(label_value: int, unknown_value=None):
+    """
+    Map raw WorldCover class -> collapsed group.
+    Returns one of:
+        "urban", "water", "vegetation"
+    or unknown_value if class is not covered by WC_GROUPS.
+    """
+    return WC_VALUE_TO_GROUP.get(int(label_value), unknown_value)
 
 
 def parse_date_from_folder(folder_name: str):
     """
     Extract date like 20200327 from folder name.
+
+    Example folder:
+    urn:eop:VITO:TERRASCOPE_S2_TOC_V2:S2A_20200713T103031_32UPV_TOC_V210__20200713T103031
     """
-    m = re.search(r"_(\d{8})T\d{6}_", folder_name)
+    m = re.search(r"_(\d{8})T\d{6}", folder_name)
     if not m:
         raise ValueError(f"Could not parse date from folder name: {folder_name}")
+
     date_str = m.group(1)
 
     year = int(date_str[:4])
     month = int(date_str[4:6])
     day = int(date_str[6:8])
 
-    dt = pd.Timestamp(year=year, month=month, day=day)
-
-    return dt
+    return pd.Timestamp(year=year, month=month, day=day)
 
 
 def encode_time_features(dt: pd.Timestamp):
@@ -47,105 +98,186 @@ def encode_time_features(dt: pd.Timestamp):
     }
 
 
-def find_image_paths(folder: Path):
-    # folder = Path("../process_esa") / folder 
-    cropped = list(folder.glob("*_cropped.png"))
-    aligned = list(folder.glob("*_label_aligned.png"))
-
-    if len(cropped) != 1:
-        raise ValueError(f"Expected exactly 1 cropped image in {folder}, got {len(cropped)}")
-    if len(aligned) != 1:
-        raise ValueError(f"Expected exactly 1 aligned label image in {folder}, got {len(aligned)}")
-    
-    return cropped[0], aligned[0]
-
-
-def load_rgb_image(path: Path):
+def find_band_paths(folder: Path, bands=DEFAULT_BANDS):
     """
-    Reads image and keeps first 3 channels.
-    Works for PNGs loaded by matplotlib.image.imread.
+    Finds one .tif path per band in the given folder.
+
+    More robust than direct glob-by-pattern:
+    1. list all tif files in folder
+    2. match by filename substring
     """
-    img = mpimg.imread(path)
+    folder = Path(folder)
 
-    if img.ndim != 3:
-        raise ValueError(f"Expected HxWxC image, got shape {img.shape} for {path}")
+    if not folder.exists():
+        raise ValueError(f"Folder does not exist: {folder}")
 
-    if img.shape[2] < 3:
-        raise ValueError(f"Expected at least 3 channels, got shape {img.shape} for {path}")
+    if not folder.is_dir():
+        raise ValueError(f"Path is not a directory: {folder}")
 
-    img_rgb = img[:, :, :3]
-    return img_rgb
+    all_tifs = sorted([p for p in folder.iterdir() if p.is_file() and p.suffix.lower() == ".tif"])
+
+    if not all_tifs:
+        raise ValueError(f"No .tif files found in folder: {folder}")
+
+    band_paths = {}
+
+    for band in bands:
+        matches = [p for p in all_tifs if band in p.name]
+
+        if len(matches) != 1:
+            available = [p.name for p in all_tifs]
+            raise ValueError(
+                f"Expected exactly 1 tif for band {band} in {folder}, got {len(matches)}.\n"
+                f"Matches: {[p.name for p in matches]}\n"
+                f"Available tif files: {available}"
+            )
+
+        band_paths[band] = matches[0]
+
+    return band_paths
 
 
-def pad_image_reflect(img: np.ndarray, pad: int):
+def read_single_band_tif(path: str | Path):
+    """
+    Reads a single-band tif and returns:
+      data: np.ndarray of shape (H, W)
+      profile: raster profile
+      nodata: nodata value
+    """
+    with rasterio.open(path) as src:
+        data = src.read(1)
+        profile = src.profile
+        nodata = src.nodata
+
+    return data, profile, nodata
+
+
+def load_feature_stack_from_tifs(
+    band_paths: dict,
+    bands=DEFAULT_BANDS,
+    dtype=np.float32,
+):
+    """
+    Reads multiple single-band tif files and stacks them into (H, W, C).
+    """
+    arrays = []
+    ref_shape = None
+
+    for band in bands:
+        path = band_paths[band]
+        arr, _, _ = read_single_band_tif(path)
+
+        if ref_shape is None:
+            ref_shape = arr.shape
+        elif arr.shape != ref_shape:
+            raise ValueError(
+                f"Band shape mismatch for {band}: got {arr.shape}, expected {ref_shape}"
+            )
+
+        arrays.append(arr.astype(dtype))
+
+    stacked = np.stack(arrays, axis=-1)  # (H, W, C)
+    return stacked
+
+
+def load_label_tif(path: str | Path):
+    """
+    Reads label tif as (H, W).
+    """
+    label_arr, profile, nodata = read_single_band_tif(path)
+    return label_arr, profile, nodata
+
+
+def pad_array_reflect(arr: np.ndarray, pad: int):
     if pad == 0:
-        return img
-    return np.pad(img, ((pad, pad), (pad, pad), (0, 0)), mode="reflect")
+        return arr
+
+    if arr.ndim == 2:
+        return np.pad(arr, ((pad, pad), (pad, pad)), mode="reflect")
+    elif arr.ndim == 3:
+        return np.pad(arr, ((pad, pad), (pad, pad), (0, 0)), mode="reflect")
+    else:
+        raise ValueError(f"Unsupported ndim={arr.ndim}")
 
 
-def is_white_pixel(pixel: np.ndarray, threshold: float = 0.98) -> bool:
+def is_invalid_center_pixel(
+    feature_stack: np.ndarray,
+    y: int,
+    x: int,
+    nodata_values: dict | None = None,
+    bands=DEFAULT_BANDS,
+    skip_all_zero: bool = False,
+):
     """
-    Identifies if a pixel is completely white (frame, clouds, etc)
-    pixel: shape (3,)
-    Works for float [0,1] and uint [0,255].
+    Skip center pixel if:
+      - all channels are zero and skip_all_zero=True
+      - any channel equals nodata
+      - any channel is not finite
     """
-    pixel = np.asarray(pixel)
+    center = feature_stack[y, x, :]  # shape: (C,)
 
-    if np.issubdtype(pixel.dtype, np.integer):
-        pixel = pixel.astype(np.float32) / 255.0
+    if skip_all_zero and np.all(center == 0):
+        return True
 
-    return bool(np.all(pixel >= threshold))
+    if nodata_values is not None:
+        for i, band in enumerate(bands):
+            nd = nodata_values.get(band, None)
+            if nd is not None and center[i] == nd:
+                return True
 
-def extract_window_features(window: np.ndarray):
+    if np.any(~np.isfinite(center)):
+        return True
+
+    return False
+
+
+def extract_window_features_multiband(
+    window: np.ndarray,
+    band_names=DEFAULT_BANDS,
+):
     """
-    window shape: (N, N, 3)
-    Now works without Windows overlapping! 
-    Returns simple baseline features.
+    window shape: (N, N, C)
+    Returns simple baseline features per band.
     """
     feats = {}
 
-    # center pixel
-    center = window[window.shape[0] // 2, window.shape[1] // 2]
-    feats["center_r"] = float(center[0])
-    feats["center_g"] = float(center[1])
-    feats["center_b"] = float(center[2])
+    cy = window.shape[0] // 2
+    cx = window.shape[1] // 2
+    center = window[cy, cx, :]
 
-    # channel-wise stats
-    for ch_idx, ch_name in enumerate(["r", "g", "b"]):
-        channel = window[:, :, ch_idx]
-        feats[f"mean_{ch_name}"] = float(channel.mean())
-        feats[f"std_{ch_name}"] = float(channel.std())
-        feats[f"min_{ch_name}"] = float(channel.min())
-        feats[f"max_{ch_name}"] = float(channel.max())
+    for ch_idx, band_name in enumerate(band_names):
+        band_window = window[:, :, ch_idx]
+        band_name_lower = band_name.lower()
+
+        feats[f"center_{band_name_lower}"] = float(center[ch_idx])
+        feats[f"mean_{band_name_lower}"] = float(band_window.mean())
+        feats[f"std_{band_name_lower}"] = float(band_window.std())
+        feats[f"min_{band_name_lower}"] = float(band_window.min())
+        feats[f"max_{band_name_lower}"] = float(band_window.max())
 
     return feats
 
 
-def rgb_to_label_id(label_rgb: np.ndarray):
+def extract_label_distribution(label_window: np.ndarray, wc_groups: dict[str, set[int]]):
     """
-    Convert RGB triplet into a stable string label.
-    Good first baseline if labels are color-coded classes.
-    """
-    # If image values are float in [0,1], map to 0..255
-    if np.issubdtype(label_rgb.dtype, np.floating):
-        vals = np.round(label_rgb * 255).astype(int)
-    else:
-        vals = label_rgb.astype(int)
+    Compute label proportions in the window after collapsing to 3 groups.
 
-    return f"{vals[0]}_{vals[1]}_{vals[2]}"
-
-def rgb_to_label_id(label_rgb: np.ndarray):
+    Note:
+    - classes outside WC_GROUPS are ignored
+    - so urban_prop + water_prop + vegetation_prop may be < 1.0
     """
-    Convert RGB triplet into a stable string label.
-    Good first baseline if labels are color-coded classes.
-    """
-    # If image values are float in [0,1], map to 0..255
-    if np.issubdtype(label_rgb.dtype, np.floating):
-        vals = np.round(label_rgb * 255).astype(int)
-    else:
-        vals = label_rgb.astype(int)
+    total_pixels = label_window.size
+    flat = label_window.reshape(-1).astype(int)
 
-    return f"{vals[0]}_{vals[1]}_{vals[2]}"
+    urban = np.isin(flat, list(wc_groups["urban"])).sum()
+    water = np.isin(flat, list(wc_groups["water"])).sum()
+    vegetation = np.isin(flat, list(wc_groups["vegetation"])).sum()
+
+    return {
+        "urban_prop": urban / total_pixels,
+        "water_prop": water / total_pixels,
+        "vegetation_prop": vegetation / total_pixels,
+    }
 
 
 def estimate_num_rows(
@@ -181,58 +313,58 @@ def estimate_num_rows(
     return num_images * n_y * n_x
 
 
-def collect_dataset_items(root: Path, dirs2use: dict):
+def collect_dataset_items_tif(
+    root: Path,
+    folder_names: list[str],
+    label_path: str | Path,
+    bands=DEFAULT_BANDS,
+):
     """
     Returns:
-      train_items -> list of dicts for 2020
-      test_items  -> list of dicts for 2021
+      items -> list of dicts, one per timestamp folder
     """
-    train_dirs = list(dirs2use.keys())
-    test_dirs = list(dirs2use.values())
+    items = []
+    label_path = str(label_path)
 
-    train_items = []
-    test_items = []
+    for folder_name in folder_names:
+        folder = root / folder_name
+        band_paths = find_band_paths(folder, bands=bands)
+        dt = parse_date_from_folder(folder_name)
 
-    for split_name, folder_names in [("train", train_dirs), ("test", test_dirs)]:
-        for folder_name in folder_names:
-            folder = root / folder_name
-            cropped_path, aligned_path = find_image_paths(folder)
-            dt = parse_date_from_folder(folder_name)
+        item = {
+            "folder_name": folder_name,
+            "image_id": folder_name,
+            "folder_path": str(folder),
+            "label_path": label_path,
+            "timestamp": dt,
+            "band_paths": {k: str(v) for k, v in band_paths.items()},
+        }
+        items.append(item)
 
-            item = {
-                "folder_name": folder_name,
-                "image_id": folder_name,
-                "cropped_path": str(cropped_path),
-                "aligned_path": str(aligned_path),
-                "timestamp": dt,
-            }
-
-            if split_name == "train":
-                train_items.append(item)
-            else:
-                test_items.append(item)
-
-    return train_items, test_items
+    return items
 
 
-def image_pair_to_table(
-    cropped_path: str,
-    aligned_path: str,
+
+def image_tif_pair_to_table(
+    band_paths: dict,
+    label_path: str,
     image_id: str,
     timestamp: pd.Timestamp,
     kernel_size: int = 3,
     keep_borders: bool = True,
     stride: int = 0,
+    bands=DEFAULT_BANDS,
+    skip_all_zero: bool = False,
 ):
     """
-    One image pair -> DataFrame with one row per valid pixel.
-    
-    Parameters:
-        kernel_size: size of NxN neighborhood
-        keep_borders: whether to use reflected padding for border pixels
-        stride:
-            0 or 1 -> use all pixels
-            k > 1  -> use every k-th pixel along x and y
+    One tif multiband sample -> DataFrame with one row per valid pixel.
+
+    Target:
+      label_value     raw WorldCover value
+      label_group     urban / water / vegetation
+      label_group_id  0 / 1 / 2
+
+    Pixels with label classes outside WC_GROUPS are skipped.
     """
     if kernel_size % 2 == 0:
         raise ValueError("kernel_size must be odd")
@@ -242,24 +374,30 @@ def image_pair_to_table(
 
     step = 1 if stride in (0, 1) else stride
 
-    img = load_rgb_image(Path(cropped_path))
-    label_img = load_rgb_image(Path(aligned_path))
+    feature_stack = load_feature_stack_from_tifs(band_paths, bands=bands)
+    H, W, _ = feature_stack.shape
 
-    if img.shape[:2] != label_img.shape[:2]:
+    nodata_values = {}
+    for band in bands:
+        _, _, nd = read_single_band_tif(band_paths[band])
+        nodata_values[band] = nd
+
+    label_arr, _, label_nodata = load_label_tif(label_path)
+
+    if label_arr.shape != (H, W):
         raise ValueError(
-            f"Image/label shape mismatch: {img.shape} vs {label_img.shape}"
+            f"Feature/label shape mismatch: features {(H, W)} vs label {label_arr.shape}"
         )
 
-    H, W, _ = img.shape
     radius = kernel_size // 2
     time_feats = encode_time_features(timestamp)
 
     if keep_borders:
-        img_padded = pad_image_reflect(img, radius)
+        feat_padded = pad_array_reflect(feature_stack, radius)
         y_range = range(0, H, step)
         x_range = range(0, W, step)
     else:
-        img_padded = img
+        feat_padded = feature_stack
         y_range = range(radius, H - radius, step)
         x_range = range(radius, W - radius, step)
 
@@ -267,231 +405,241 @@ def image_pair_to_table(
 
     for y in y_range:
         for x in x_range:
-            # skip white center pixels in raw image
-            center_pixel = img[y, x, :]
-            if is_white_pixel(center_pixel, threshold=0.98):
+            if is_invalid_center_pixel(
+                feature_stack=feature_stack,
+                y=y,
+                x=x,
+                nodata_values=nodata_values,
+                bands=bands,
+                skip_all_zero=skip_all_zero,
+            ):
+                continue
+
+            label_value = int(label_arr[y, x])
+
+            if label_nodata is not None and label_value == label_nodata:
+                continue
+
+            label_group = wc_label_to_group(label_value, unknown_value=None)
+            if label_group is None:
                 continue
 
             if keep_borders:
                 yp = y + radius
                 xp = x + radius
-                window = img_padded[
+                window = feat_padded[
                     yp - radius: yp + radius + 1,
                     xp - radius: xp + radius + 1,
                     :
                 ]
             else:
-                window = img[
+                window = feature_stack[
                     y - radius: y + radius + 1,
                     x - radius: x + radius + 1,
                     :
                 ]
 
-            feats = extract_window_features(window)
-
-            label_rgb = label_img[y, x, :]
-            label_id = rgb_to_label_id(label_rgb)
+            feats = extract_window_features_multiband(window, band_names=bands)
 
             row = {
                 "image_id": image_id,
-                "cropped_path": cropped_path,
-                "aligned_path": aligned_path,
+                "label_path": label_path,
                 "timestamp": timestamp.isoformat(),
                 "x": x,
                 "y": y,
                 "x_norm": x / (W - 1) if W > 1 else 0.0,
                 "y_norm": y / (H - 1) if H > 1 else 0.0,
-                "label_r": float(label_rgb[0]),
-                "label_g": float(label_rgb[1]),
-                "label_b": float(label_rgb[2]),
-                "label_id": label_id,
+                "label_value": label_value,
+                "label_group": label_group,
+                "label_group_id": GROUP_TO_ID[label_group],
                 **time_feats,
                 **feats,
             }
 
             rows.append(row)
 
-    df = pd.DataFrame(rows)
-    return df
+    return pd.DataFrame(rows)
 
 
-def build_split_table(
+def image_tif_pair_to_table_distributed(
+    band_paths: dict,
+    label_path: str,
+    image_id: str,
+    timestamp: pd.Timestamp,
+    kernel_size: int = 3,
+    keep_borders: bool = True,
+    stride: int = 0,
+    bands=DEFAULT_BANDS,
+    skip_all_zero: bool = False,
+):
+    """
+    One tif multiband sample -> DataFrame with one row per valid pixel.
+
+    Target:
+      urban_prop
+      water_prop
+      vegetation_prop
+
+    Proportions are computed from label window using WC_GROUPS.
+    Classes outside WC_GROUPS are ignored, so proportions may sum to < 1.
+    """
+    if kernel_size % 2 == 0:
+        raise ValueError("kernel_size must be odd")
+
+    if stride < 0:
+        raise ValueError("stride must be >= 0")
+
+    step = 1 if stride in (0, 1) else stride
+
+    feature_stack = load_feature_stack_from_tifs(band_paths, bands=bands)
+    H, W, _ = feature_stack.shape
+
+    nodata_values = {}
+    for band in bands:
+        _, _, nd = read_single_band_tif(band_paths[band])
+        nodata_values[band] = nd
+
+    label_arr, _, label_nodata = load_label_tif(label_path)
+
+    if label_arr.shape != (H, W):
+        raise ValueError(
+            f"Feature/label shape mismatch: features {(H, W)} vs label {label_arr.shape}"
+        )
+
+    radius = kernel_size // 2
+    time_feats = encode_time_features(timestamp)
+
+    if keep_borders:
+        feat_padded = pad_array_reflect(feature_stack, radius)
+        label_padded = pad_array_reflect(label_arr, radius)
+        y_range = range(0, H, step)
+        x_range = range(0, W, step)
+    else:
+        feat_padded = feature_stack
+        label_padded = label_arr
+        y_range = range(radius, H - radius, step)
+        x_range = range(radius, W - radius, step)
+
+    rows = []
+
+    for y in y_range:
+        for x in x_range:
+            if is_invalid_center_pixel(
+                feature_stack=feature_stack,
+                y=y,
+                x=x,
+                nodata_values=nodata_values,
+                bands=bands,
+                skip_all_zero=skip_all_zero,
+            ):
+                continue
+
+            center_label = int(label_arr[y, x])
+
+            if label_nodata is not None and center_label == label_nodata:
+                continue
+
+            if keep_borders:
+                yp = y + radius
+                xp = x + radius
+
+                feat_window = feat_padded[
+                    yp - radius: yp + radius + 1,
+                    xp - radius: xp + radius + 1,
+                    :
+                ]
+                label_window = label_padded[
+                    yp - radius: yp + radius + 1,
+                    xp - radius: xp + radius + 1
+                ]
+            else:
+                feat_window = feature_stack[
+                    y - radius: y + radius + 1,
+                    x - radius: x + radius + 1,
+                    :
+                ]
+                label_window = label_arr[
+                    y - radius: y + radius + 1,
+                    x - radius: x + radius + 1
+                ]
+
+            feats = extract_window_features_multiband(feat_window, band_names=bands)
+            dist = extract_label_distribution(label_window, WC_GROUPS)
+
+            row = {
+                "image_id": image_id,
+                "label_path": label_path,
+                "timestamp": timestamp.isoformat(),
+                "x": x,
+                "y": y,
+                "x_norm": x / (W - 1) if W > 1 else 0.0,
+                "y_norm": y / (H - 1) if H > 1 else 0.0,
+                **time_feats,
+                **feats,
+                **dist,
+            }
+
+            rows.append(row)
+
+    return pd.DataFrame(rows)
+
+
+def build_split_table_tif(
     items: list,
     kernel_size: int = 3,
     keep_borders: bool = True,
     stride: int = 0,
-    distribution: bool = True,
+    distribution: bool = False,
+    bands=DEFAULT_BANDS,
+    skip_all_zero: bool = False,
 ):
     """
-    Takes items: [{folder_name: img_name}] to build the dataset from.
-    
+    Build one big dataframe from collected tif items.
+
     Parameters:
+        items: list of dicts from collect_dataset_items_tif(...)
         kernel_size: size of NxN neighborhood
-        keep_borders: whether to process border pixels
+        keep_borders: if True, use reflected padding for border pixels
         stride:
             0 or 1 -> use all pixels
             k > 1  -> use every k-th pixel
+        distribution:
+            False -> classification mode
+            True  -> distribution mode
     """
     dfs = []
 
     for item in items:
         print(f"Processing {item['image_id']} ...")
+
         if distribution:
-            df_img = image_pair_to_table_distributed(
-                cropped_path=item["cropped_path"],
-                aligned_path=item["aligned_path"],
+            df_img = image_tif_pair_to_table_distributed(
+                band_paths=item["band_paths"],
+                label_path=item["label_path"],
                 image_id=item["image_id"],
                 timestamp=item["timestamp"],
                 kernel_size=kernel_size,
                 keep_borders=keep_borders,
                 stride=stride,
+                bands=bands,
+                skip_all_zero=skip_all_zero,
             )
         else:
-            df_img = image_pair_to_table(
-                cropped_path=item["cropped_path"],
-                aligned_path=item["aligned_path"],
+            df_img = image_tif_pair_to_table(
+                band_paths=item["band_paths"],
+                label_path=item["label_path"],
                 image_id=item["image_id"],
                 timestamp=item["timestamp"],
                 kernel_size=kernel_size,
                 keep_borders=keep_borders,
                 stride=stride,
+                bands=bands,
+                skip_all_zero=skip_all_zero,
             )
+
         dfs.append(df_img)
 
     if not dfs:
         return pd.DataFrame()
 
     return pd.concat(dfs, ignore_index=True)
-
-
-def image_pair_to_table_distributed(
-    cropped_path: str,
-    aligned_path: str,
-    image_id: str,
-    timestamp: pd.Timestamp,
-    kernel_size: int = 3,
-    keep_borders: bool = True,
-    stride: int = 0,
-):
-    """
-    One image pair -> DataFrame with one row per valid pixel.
-    
-    Parameters:
-        kernel_size: size of NxN neighborhood
-        keep_borders: whether to use reflected padding for border pixels
-        stride:
-            0 or 1 -> use all pixels
-            k > 1  -> use every k-th pixel along x and y
-    """
-    if kernel_size % 2 == 0:
-        raise ValueError("kernel_size must be odd")
-
-    if stride < 0:
-        raise ValueError("stride must be >= 0")
-
-    step = 1 if stride in (0, 1) else stride
-
-    img = load_rgb_image(Path(cropped_path))
-    label_img = load_rgb_image(Path(aligned_path))
-
-    if img.shape[:2] != label_img.shape[:2]:
-        raise ValueError(
-            f"Image/label shape mismatch: {img.shape} vs {label_img.shape}"
-        )
-
-    H, W, _ = img.shape
-    radius = kernel_size // 2
-    time_feats = encode_time_features(timestamp)
-
-    if keep_borders:
-        img_padded = pad_image_reflect(img, radius)
-        label_padded = pad_image_reflect(label_img, radius)
-        y_range = range(0, H, step)
-        x_range = range(0, W, step)
-    else:
-        img_padded = img
-        label_padded = label_img
-        y_range = range(radius, H - radius, step)
-        x_range = range(radius, W - radius, step)
-
-    rows = []
-
-    for y in y_range:
-        for x in x_range:
-            # skip white center pixels in raw image
-            center_pixel = img[y, x, :]
-            if is_white_pixel(center_pixel, threshold=0.98):
-                continue
-
-            if keep_borders:
-                yp = y + radius
-                xp = x + radius
-
-                window = img_padded[
-                    yp - radius: yp + radius + 1,
-                    xp - radius: xp + radius + 1,
-                    :
-                ]
-
-                label_window = label_padded[
-                    yp - radius: yp + radius + 1,
-                    xp - radius: xp + radius + 1,
-                    :
-                ]
-            else:
-                window = img[
-                    y - radius: y + radius + 1,
-                    x - radius: x + radius + 1,
-                    :
-                ]
-
-                label_window = label_img[
-                    y - radius: y + radius + 1,
-                    x - radius: x + radius + 1,
-                    :
-                ]
-
-            feats = extract_window_features(window)
-            dist = extract_window_distribution(label_window)
-
-            row = {
-                "image_id": image_id,
-                "cropped_path": cropped_path,
-                "aligned_path": aligned_path,
-                "timestamp": timestamp.isoformat(),
-                "x": x,
-                "y": y,
-                "x_norm": x / (W - 1) if W > 1 else 0.0,
-                "y_norm": y / (H - 1) if H > 1 else 0.0,
-                "urban_prop": float(dist[0]),
-                "water_prop": float(dist[1]),
-                "vegetation_prop": float(dist[2]),
-                **time_feats,
-                **feats,
-            }
-
-            rows.append(row)
-
-    df = pd.DataFrame(rows)
-    return df
-
-
-def extract_window_distribution(window: np.ndarray):
-    h, w, _ = window.shape
-    total_pixels = h * w
-
-    # Flatten pixels
-    pixels = window.reshape(-1, 3)
-    rgb_strings = np.array([f"{r}_{g}_{b}" for r, g, b in pixels])
-
-    labels = np.array([RGB_STR2LABEL_STR.get(k, "unknown") for k in rgb_strings])
-
-    urban = np.isin(labels, GROUPS["urban"]).sum()
-    water = np.isin(labels, GROUPS["water"]).sum()
-    vegetation = np.isin(labels, GROUPS["vegetation"]).sum()
-
-    return np.array([
-        urban / total_pixels,
-        water / total_pixels,
-        vegetation / total_pixels
-    ])
