@@ -50,6 +50,7 @@ FEATURE_COLS = [
 ]
 
 TARGET_COL = "label_id"
+TARGET_COLS = ["urban_prop", "water_prop", "vegetation_prop"]
 
 GROUPS = {
     "urban": ["built_up"],
