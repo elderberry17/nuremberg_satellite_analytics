@@ -10,14 +10,17 @@ Edit values here to download only the time window / products you need.
 
 RAW_OUT_DIR = "S2_RGB_no_clouds"
 
+# 20210220T101939
+# 20211222T102441
+
 # Geographic bounds used for searching products (minx, miny, maxx, maxy)
 RAW_BOUNDS = (10.95, 49.38, 11.15, 49.52)
 
 RAW_PRODUCT_URN = "urn:eop:VITO:TERRASCOPE_S2_TOC_V2"
 
 # Time window for raw scene download (ISO dates)
-RAW_START = "2020-01-01"
-RAW_END = "2020-12-31"
+RAW_START = "2021-12-22"
+RAW_END = "2021-12-23"
 
 # Terracatalogue query options
 RAW_CLOUD_COVER = 5
