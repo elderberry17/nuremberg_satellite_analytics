@@ -122,7 +122,7 @@ def find_band_paths(folder: Path, bands=DEFAULT_BANDS):
     band_paths = {}
 
     for band in bands:
-        matches = [p for p in all_tifs if band in p.name]
+        matches = [p for p in all_tifs if band in p.name and "aligned" in p.name]
 
         if len(matches) != 1:
             available = [p.name for p in all_tifs]
