@@ -1,0 +1,4 @@
+example_height: 2405
+example_width: 1591
+kernel_size: 11
+stride: 5

@@ -678,17 +678,3 @@ def build_split_table_tif(
 
     if not dfs:
         return pd.DataFrame()
-def extract_window_distribution(window: np.ndarray):
-    h, w, _ = window.shape
-    total_pixels = h * w
-    
-    # Flatten pixels and map them into 0-255
-    pixels = (window.reshape(-1, 3) * 255).astype(int)
-    rgb_strings = np.array([f"{r}_{g}_{b}" for r, g, b in pixels])
-    labels = np.array([RGB_STR2LABEL_STR.get(k, "unknown") for k in rgb_strings])
-    
-    water = np.isin(labels, GROUPS["water"]).sum()
-    urban = np.isin(labels, GROUPS["urban"]).sum()
-    vegetation = np.isin(labels, GROUPS["vegetation"]).sum()
-
-    return pd.concat(dfs, ignore_index=True)
