@@ -344,6 +344,43 @@ def collect_dataset_items_tif(
     return items
 
 
+def collect_dataset_items_tif_multilabel(
+    root: Path,
+    folder_names: list[str],
+    label_paths: dict[str, str | Path],
+    bands=DEFAULT_BANDS,
+):
+    """
+    Returns:
+      items -> list of dicts, one per timestamp folder
+
+    label_paths example:
+        {
+            "2020": "/path/to/wc_2020.tif",
+            "2021": "/path/to/wc_2021.tif",
+        }
+    """
+    items = []
+
+    label_paths = {str(k): str(v) for k, v in label_paths.items()}
+
+    for folder_name in folder_names:
+        folder = root / folder_name
+        band_paths = find_band_paths(folder, bands=bands)
+        dt = parse_date_from_folder(folder_name)
+
+        item = {
+            "folder_name": folder_name,
+            "image_id": folder_name,
+            "folder_path": str(folder),
+            "label_paths": label_paths,
+            "timestamp": dt,
+            "band_paths": {k: str(v) for k, v in band_paths.items()},
+        }
+        items.append(item)
+
+    return items
+
 
 def image_tif_pair_to_table(
     band_paths: dict,

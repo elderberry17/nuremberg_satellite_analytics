@@ -1,6 +1,9 @@
 ROOT_NAME = "S2_RGB_no_clouds"
 
-LABELS_PATH = "WorldCover_labels_2021/ESA_WorldCover_10m_2021_v200_N48E009/ESA_WorldCover_10m_2021_v200_N48E009_Map_aligned.tif"
+LABEL_PATHS = {
+    "2020": "../WorldCover_labels_2020/ESA_WorldCover_10m_2020_v100_N48E009/ESA_WorldCover_10m_2020_v100_N48E009_Map_aligned.tif",
+    "2021": "../WorldCover_labels_2021/ESA_WorldCover_10m_2021_v200_N48E009/ESA_WorldCover_10m_2021_v200_N48E009_Map_aligned.tif",
+}
 
 TRAIN_FILES = ["urn:eop:VITO:TERRASCOPE_S2_TOC_V2:S2B_20200327T101629_32UPV_TOC_V210__20200327T101629",
                "urn:eop:VITO:TERRASCOPE_S2_TOC_V2:S2A_20200809T102031_32UPV_TOC_V210__20200809T102031",
@@ -13,8 +16,8 @@ TEST_FILES_TEMP = [
     "urn:eop:VITO:TERRASCOPE_S2_TOC_V2:S2A_20211222T102441_32UPV_TOC_V210__20211222T102441",
 ]
 
-TARGET_COL = "label_id"
-TARGET_COLS = ["urban_prop", "water_prop", "vegetation_prop"]
+TARGET_COLS2020 = ["urban_prop_2020", "water_prop_2020", "vegetation_prop_2020"]
+TARGET_COLS2021 = ["urban_prop_2021", "water_prop_2021", "vegetation_prop_2021"]
 
 WC_GROUPS = {
     "urban": {50},
@@ -40,5 +43,3 @@ FEATURE_COLS_BASELINE_EXTENDED = ['x', 'y', 'x_norm', 'y_norm',
        'min_b08', 'max_b08', 'center_b11', 'mean_b11', 'std_b11', 'min_b11',
        'max_b11', 'mean_NIR', 'mean_SWIR', 'mean_NDVI', 'mean_NDBI',
        'std_NDVI', 'cloud_pct', 'built_up_pct']
-
-TARGET_COLUMNS = ['urban_prop', 'water_prop', 'vegetation_prop']

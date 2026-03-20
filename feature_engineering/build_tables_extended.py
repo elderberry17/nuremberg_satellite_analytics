@@ -15,6 +15,7 @@ from feature_engineering.build_tables import (
     pad_array_reflect,
     read_single_band_tif,
     wc_label_to_group,
+    collect_dataset_items_tif_multilabel
 )
 
 
@@ -365,6 +366,180 @@ def image_tif_pair_to_table_distributed_extended(
     return pd.DataFrame(rows)
 
 
+def image_tif_pair_to_table_distributed_multilabel_extended(
+    band_paths: dict,
+    label_paths: dict[str, str],
+    image_id: str,
+    timestamp: pd.Timestamp,
+    kernel_size: int = 3,
+    keep_borders: bool = True,
+    stride: int = 0,
+    bands=DEFAULT_BANDS,
+    skip_all_zero: bool = False,
+):
+    """
+    Extended distributed table with:
+      1. baseline window features
+      2. spectral features
+      3. label distributions for multiple label rasters
+
+    Example output targets:
+      urban_prop_2020, water_prop_2020, vegetation_prop_2020,
+      urban_prop_2021, water_prop_2021, vegetation_prop_2021
+    """
+    if kernel_size % 2 == 0:
+        raise ValueError("kernel_size must be odd")
+
+    if stride < 0:
+        raise ValueError("stride must be >= 0")
+
+    if not label_paths:
+        raise ValueError("label_paths must be non-empty")
+
+    step = 1 if stride in (0, 1) else stride
+
+    feature_stack = load_feature_stack_from_tifs(band_paths, bands=bands)
+    H, W, _ = feature_stack.shape
+
+    radius = kernel_size // 2
+    time_feats = encode_time_features(timestamp)
+
+    invalid_mask = build_invalid_mask(
+        feature_stack=feature_stack,
+        band_paths=band_paths,
+        bands=bands,
+        skip_all_zero=skip_all_zero,
+    )
+
+    # Load all label rasters first
+    label_data = {}
+    for label_name, label_path in label_paths.items():
+        label_arr, _, label_nodata = load_label_tif(label_path)
+
+        if label_arr.shape != (H, W):
+            raise ValueError(
+                f"Feature/label shape mismatch for '{label_name}': "
+                f"features {(H, W)} vs label {label_arr.shape}"
+            )
+
+        label_data[label_name] = {
+            "arr": label_arr,
+            "nodata": label_nodata,
+            "path": str(label_path),
+        }
+
+    if keep_borders:
+        feat_padded = pad_array_reflect(feature_stack, radius)
+        invalid_padded = pad_array_reflect(invalid_mask.astype(np.uint8), radius).astype(bool)
+
+        label_padded = {
+            label_name: pad_array_reflect(info["arr"], radius)
+            for label_name, info in label_data.items()
+        }
+
+        y_range = range(0, H, step)
+        x_range = range(0, W, step)
+    else:
+        feat_padded = feature_stack
+        invalid_padded = invalid_mask
+        label_padded = {
+            label_name: info["arr"]
+            for label_name, info in label_data.items()
+        }
+
+        y_range = range(radius, H - radius, step)
+        x_range = range(radius, W - radius, step)
+
+    rows = []
+
+    for y in y_range:
+        for x in x_range:
+            if invalid_mask[y, x]:
+                continue
+
+            if keep_borders:
+                yp = y + radius
+                xp = x + radius
+
+                feat_window = feat_padded[
+                    yp - radius: yp + radius + 1,
+                    xp - radius: xp + radius + 1,
+                    :
+                ]
+                invalid_window = invalid_padded[
+                    yp - radius: yp + radius + 1,
+                    xp - radius: xp + radius + 1
+                ]
+            else:
+                feat_window = feature_stack[
+                    y - radius: y + radius + 1,
+                    x - radius: x + radius + 1,
+                    :
+                ]
+                invalid_window = invalid_mask[
+                    y - radius: y + radius + 1,
+                    x - radius: x + radius + 1
+                ]
+
+            baseline_feats = extract_window_features_multiband(
+                feat_window,
+                band_names=bands,
+            )
+
+            spectral_feats = compute_window_spectral_features(
+                window=feat_window,
+                band_names=bands,
+                invalid_mask_window=invalid_window,
+            )
+
+            row = {
+                "image_id": image_id,
+                "timestamp": timestamp.isoformat(),
+                "x": x,
+                "y": y,
+                "x_norm": x / (W - 1) if W > 1 else 0.0,
+                "y_norm": y / (H - 1) if H > 1 else 0.0,
+                **time_feats,
+                **baseline_feats,
+                **spectral_feats,
+            }
+
+            # Add distributions for each label raster
+            for label_name, info in label_data.items():
+                label_arr = info["arr"]
+                label_nodata = info["nodata"]
+
+                center_label = int(label_arr[y, x])
+                if label_nodata is not None and center_label == label_nodata:
+                    row = None
+                    break
+
+                if keep_borders:
+                    label_window = label_padded[label_name][
+                        yp - radius: yp + radius + 1,
+                        xp - radius: xp + radius + 1
+                    ]
+                else:
+                    label_window = label_arr[
+                        y - radius: y + radius + 1,
+                        x - radius: x + radius + 1
+                    ]
+
+                dist = extract_label_distribution(label_window, WC_GROUPS)
+
+                row[f"urban_prop_{label_name}"] = dist["urban_prop"]
+                row[f"water_prop_{label_name}"] = dist["water_prop"]
+                row[f"vegetation_prop_{label_name}"] = dist["vegetation_prop"]
+                row[f"label_path_{label_name}"] = info["path"]
+
+            if row is None:
+                continue
+
+            rows.append(row)
+
+    return pd.DataFrame(rows)
+
+
 def build_split_table_tif_extended(
     items: list,
     kernel_size: int = 3,
@@ -406,6 +581,45 @@ def build_split_table_tif_extended(
                 bands=bands,
                 skip_all_zero=skip_all_zero,
             )
+
+        dfs.append(df_img)
+
+    if not dfs:
+        return pd.DataFrame()
+
+    return pd.concat(dfs, ignore_index=True)
+
+
+def build_split_table_tif_multilabel_extended(
+    items: list,
+    kernel_size: int = 3,
+    keep_borders: bool = True,
+    stride: int = 0,
+    bands=DEFAULT_BANDS,
+    skip_all_zero: bool = False,
+):
+    """
+    Build one big dataframe with:
+      - baseline features
+      - spectral features
+      - multi-label distributions (e.g. 2020 + 2021)
+    """
+    dfs = []
+
+    for item in items:
+        print(f"Processing {item['image_id']} ...")
+
+        df_img = image_tif_pair_to_table_distributed_multilabel_extended(
+            band_paths=item["band_paths"],
+            label_paths=item["label_paths"],
+            image_id=item["image_id"],
+            timestamp=item["timestamp"],
+            kernel_size=kernel_size,
+            keep_borders=keep_borders,
+            stride=stride,
+            bands=bands,
+            skip_all_zero=skip_all_zero,
+        )
 
         dfs.append(df_img)
 
@@ -461,5 +675,19 @@ def collect_items_extended(
         root=root,
         folder_names=folder_names,
         label_path=label_path,
+        bands=bands,
+    )
+
+
+def collect_items_extended_multilabel(
+    root: Path,
+    folder_names: list[str],
+    label_paths: dict[str, str | Path],
+    bands=DEFAULT_BANDS,
+):
+    return collect_dataset_items_tif_multilabel(
+        root=root,
+        folder_names=folder_names,
+        label_paths=label_paths,
         bands=bands,
     )
