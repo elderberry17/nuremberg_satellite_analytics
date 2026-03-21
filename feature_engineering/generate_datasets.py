@@ -85,13 +85,16 @@ def generate_holdout_sets(df_extended, test_temporal):
     return train_df, test_spatial, test_temporal_only, test_spatial_temporal
 
 
-def read_dataset(dataset_dir):
-    train_df = pd.read_parquet(dataset_dir)
-    test_spatial = pd.read_parquet(dataset_dir)
-    test_temporal = pd.read_parquet(dataset_dir)
-    test_spatial_temporal = pd.read_parquet(dataset_dir)
+def read_train_test_datasets(train_path, test_path):
+    '''
+    Using only spatial test for now.
+    '''
+    train_df = pd.read_parquet(train_path)
+    test_spatial = pd.read_parquet(test_path)
+    # test_temporal = pd.read_parquet(dataset_dir)
+    # test_spatial_temporal = pd.read_parquet(dataset_dir)
 
-    return train_df, test_spatial, test_temporal, test_spatial_temporal
+    return train_df, test_spatial
 
 
 def split_train_val(

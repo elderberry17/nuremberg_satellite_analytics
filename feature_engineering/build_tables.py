@@ -5,8 +5,10 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import rasterio
-from tqdm import tqdm
-
+import pyproj
+from shapely.ops import transform as shp_transform
+from shapely.geometry import Polygon, mapping
+from rasterio.mask import mask
 from config import WC_GROUPS
 
 
@@ -143,13 +145,27 @@ def read_single_band_tif(path: str | Path):
       data: np.ndarray of shape (H, W)
       profile: raster profile
       nodata: nodata value
+
+      CONSIDER ROI
     """
+    ROI_COORDS = [
+        (10.973282, 49.556621),
+        (11.183739, 49.556621),
+        (11.183739, 49.344138),
+        (10.973282, 49.344138),
+        (10.973282, 49.556621),
+    ]
+    ROI_POLY_WGS84 = Polygon(ROI_COORDS)
+
     with rasterio.open(path) as src:
-        data = src.read(1)
+        transformer = pyproj.Transformer.from_crs("EPSG:4326", src.crs, always_xy=True)
+        roi_proj = shp_transform(transformer.transform, ROI_POLY_WGS84)
+        arr, _ = mask(src, [mapping(roi_proj)], crop=True)
+
         profile = src.profile
         nodata = src.nodata
 
-    return data, profile, nodata
+    return arr[0], profile, nodata
 
 
 def load_feature_stack_from_tifs(

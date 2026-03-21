@@ -131,7 +131,7 @@ def image_tif_pair_to_table_extended(
         raise ValueError(
             f"Feature/label shape mismatch: {feature_stack.shape[:2]} vs {label_arr.shape}"
         )
-
+    
     H, W, _ = feature_stack.shape
     radius = kernel_size // 2
     time_feats = encode_time_features(timestamp)
@@ -261,7 +261,7 @@ def image_tif_pair_to_table_distributed_extended(
         raise ValueError(
             f"Feature/label shape mismatch: {feature_stack.shape[:2]} vs {label_arr.shape}"
         )
-
+    
     H, W, _ = feature_stack.shape
     radius = kernel_size // 2
     time_feats = encode_time_features(timestamp)
@@ -455,7 +455,8 @@ def image_tif_pair_to_table_distributed_multilabel_extended(
     for y in y_range:
         for x in x_range:
             if invalid_mask[y, x]:
-                continue
+                # continue
+                pass
 
             if keep_borders:
                 yp = y + radius
