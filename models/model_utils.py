@@ -1,4 +1,3 @@
-import sys
 import os
 import random
 from pathlib import Path
@@ -13,6 +12,9 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import Ridge
 from sklearn.multioutput import MultiOutputRegressor
 from sklearn.ensemble import RandomForestRegressor
+from sklearn.neighbors import KNeighborsRegressor
+from sklearn.tree import DecisionTreeRegressor
+from sklearn.neural_network import MLPRegressor
 from sklearn.metrics import mean_squared_error
 
 from xgboost import XGBRegressor
@@ -21,10 +23,7 @@ from catboost import CatBoostRegressor
 
 from evaluation.metric_utils import evaluate_all_metrics
 
-from config import (
-    ROOT_NAME,
-    ROOT_NAME,
-)
+from config import ROOT_NAME
 
 SEED = 42
 ROOT = Path(os.path.join("../process_esa/", ROOT_NAME))
@@ -304,6 +303,145 @@ def get_catboost_hpo_model(
                         **best_params, random_seed=seed, verbose=0
                     )
                 ),
+            ),
+        ]
+    )
+
+    return best_model, best_params, study
+
+
+def get_knn_hpo_model(X_train, y_train, X_val, y_val, n_trials=20, seed=42):
+    def objective(trial):
+        params = {
+            "n_neighbors": trial.suggest_int("n_neighbors", 3, 50),
+            "weights": trial.suggest_categorical(
+                "weights", ["uniform", "distance"]
+            ),
+            "p": trial.suggest_int("p", 1, 2),  # 1=manhattan, 2=euclidean
+        }
+
+        model = Pipeline(
+            [
+                ("imputer", SimpleImputer(strategy="median")),
+                ("scaler", StandardScaler()),  # IMPORTANT for KNN
+                ("regressor", KNeighborsRegressor(**params)),
+            ]
+        )
+
+        model.fit(X_train, y_train)
+        y_pred = model.predict(X_val)
+
+        rmse = np.sqrt(mean_squared_error(y_val, y_pred))
+        return rmse
+
+    sampler = optuna.samplers.TPESampler(seed=seed)
+
+    study = optuna.create_study(direction="minimize", sampler=sampler)
+    study.optimize(objective, n_trials=n_trials)
+
+    best_params = study.best_params
+
+    best_model = Pipeline(
+        [
+            ("imputer", SimpleImputer(strategy="median")),
+            ("scaler", StandardScaler()),
+            ("regressor", KNeighborsRegressor(**best_params)),
+        ]
+    )
+
+    return best_model, best_params, study
+
+
+def get_dt_hpo_model(X_train, y_train, X_val, y_val, n_trials=20, seed=42):
+    def objective(trial):
+        params = {
+            "max_depth": trial.suggest_int("max_depth", 3, 30),
+            "min_samples_split": trial.suggest_int("min_samples_split", 2, 20),
+            "min_samples_leaf": trial.suggest_int("min_samples_leaf", 1, 10),
+            "max_features": trial.suggest_categorical(
+                "max_features", ["sqrt", "log2", None]
+            ),
+        }
+
+        model = Pipeline(
+            [
+                ("imputer", SimpleImputer(strategy="median")),
+                (
+                    "regressor",
+                    DecisionTreeRegressor(**params, random_state=seed),
+                ),
+            ]
+        )
+
+        model.fit(X_train, y_train)
+        y_pred = model.predict(X_val)
+
+        rmse = np.sqrt(mean_squared_error(y_val, y_pred))
+        return rmse
+
+    sampler = optuna.samplers.TPESampler(seed=seed)
+
+    study = optuna.create_study(direction="minimize", sampler=sampler)
+    study.optimize(objective, n_trials=n_trials)
+
+    best_params = study.best_params
+
+    best_model = Pipeline(
+        [
+            ("imputer", SimpleImputer(strategy="median")),
+            (
+                "regressor",
+                DecisionTreeRegressor(**best_params, random_state=seed),
+            ),
+        ]
+    )
+
+    return best_model, best_params, study
+
+
+def get_mlp_hpo_model(X_train, y_train, X_val, y_val, n_trials=20, seed=42):
+    def objective(trial):
+        params = {
+            "hidden_layer_sizes": trial.suggest_categorical(
+                "hidden_layer_sizes", [(64,), (128,), (64, 64), (128, 64)]
+            ),
+            "alpha": trial.suggest_float("alpha", 1e-5, 1e-1, log=True),
+            "learning_rate_init": trial.suggest_float(
+                "learning_rate_init", 1e-4, 1e-2, log=True
+            ),
+        }
+
+        model = Pipeline(
+            [
+                ("imputer", SimpleImputer(strategy="median")),
+                ("scaler", StandardScaler()),  # VERY IMPORTANT for MLP
+                (
+                    "regressor",
+                    MLPRegressor(**params, max_iter=300, random_state=seed),
+                ),
+            ]
+        )
+
+        model.fit(X_train, y_train)
+        y_pred = model.predict(X_val)
+
+        rmse = np.sqrt(mean_squared_error(y_val, y_pred))
+        return rmse
+
+    sampler = optuna.samplers.TPESampler(seed=seed)
+
+    study = optuna.create_study(direction="minimize", sampler=sampler)
+    study.optimize(objective, n_trials=n_trials)
+
+    best_params = study.best_params
+
+    best_model = Pipeline(
+        [
+            ("imputer", SimpleImputer(strategy="median")),
+            ("scaler", StandardScaler()),
+            (
+                "regressor",
+                MLPRegressor(**best_params, max_iter=300, random_state=seed),
             ),
         ]
     )
