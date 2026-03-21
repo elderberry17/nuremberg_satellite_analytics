@@ -15,5 +15,5 @@ __pycache__/
 .vscode/
 .idea/
 
-./results/*
-./datasets_kernel101_stride101/*
+results/
+datasets_kernel101_stride101/
