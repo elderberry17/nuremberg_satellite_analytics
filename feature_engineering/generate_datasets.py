@@ -1,6 +1,9 @@
 import os
 from pathlib import Path
+import pandas as pd
+from scipy.sparse import data
 from evaluation.generate_test import spatial_train_test_split
+from sklearn.model_selection import train_test_split
 
 from feature_engineering.build_tables import (
     build_split_table_tif,
@@ -15,7 +18,7 @@ from feature_engineering.build_tables_extended import (
 from config import (
     ROOT_NAME,
     TRAIN_FILES,
-    LABELS_PATH,
+    LABEL_PATHS,
     ROOT_NAME,
 )
 
@@ -27,7 +30,7 @@ def generate_default_baseline(
 ):
     # train_items, test_items = collect_dataset_items(ROOT, DIRS2USE)
     items = collect_dataset_items_tif(
-        root=ROOT, folder_names=TRAIN_FILES, label_path=LABELS_PATH
+        root=ROOT, folder_names=TRAIN_FILES, label_path=LABEL_PATHS
     )
 
     df_baseline = build_split_table_tif(
@@ -46,7 +49,7 @@ def generate_extended_baseline(
 ):
     # train_items, test_items = collect_dataset_items(ROOT, DIRS2USE)
     items = collect_items_extended(
-        root=ROOT, folder_names=TRAIN_FILES, label_path=LABELS_PATH
+        root=ROOT, folder_names=TRAIN_FILES, label_path=LABEL_PATHS
     )
 
     df_extended = build_split_table_tif_extended(
@@ -80,3 +83,34 @@ def generate_holdout_sets(df_extended, test_temporal):
     )
 
     return train_df, test_spatial, test_temporal_only, test_spatial_temporal
+
+
+def read_dataset(dataset_dir):
+    train_df = pd.read_parquet(dataset_dir)
+    test_spatial = pd.read_parquet(dataset_dir)
+    test_temporal = pd.read_parquet(dataset_dir)
+    test_spatial_temporal = pd.read_parquet(dataset_dir)
+
+    return train_df, test_spatial, test_temporal, test_spatial_temporal
+
+
+def split_train_val(
+    train_df,
+    val_size=0.2,
+    seed=42,
+    stratify_col=None,
+):
+    if stratify_col is not None:
+        stratify_vals = train_df[stratify_col]
+    else:
+        stratify_vals = None
+
+    train_split, val_split = train_test_split(
+        train_df,
+        test_size=val_size,
+        random_state=seed,
+        shuffle=True,
+        stratify=stratify_vals,
+    )
+
+    return train_split.reset_index(drop=True), val_split.reset_index(drop=True)

@@ -580,6 +580,7 @@ def log_experiment(
     filepath = os.path.join(model_dir, filename)
 
     # --- build log dict ---
+    # need to save weights
     log_data = {
         "model": model_name,
         "feature_set": feature_set_name,
