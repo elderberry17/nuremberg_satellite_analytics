@@ -42,4 +42,4 @@ FEATURE_COLS_BASELINE_EXTENDED = ['x', 'y', 'x_norm', 'y_norm',
        'std_b04', 'min_b04', 'max_b04', 'center_b08', 'mean_b08', 'std_b08',
        'min_b08', 'max_b08', 'center_b11', 'mean_b11', 'std_b11', 'min_b11',
        'max_b11', 'mean_NIR', 'mean_SWIR', 'mean_NDVI', 'mean_NDBI',
-       'std_NDVI', 'cloud_pct', 'built_up_pct']
+       'std_NDVI', 'cloud_pct']
