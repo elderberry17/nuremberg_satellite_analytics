@@ -4,6 +4,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import yaml
+import json
+from datetime import datetime
+
 
 import optuna
 from sklearn.pipeline import Pipeline
@@ -523,6 +526,20 @@ def run_experiment_suite(
                 # evaluate
                 result = evaluate_all_metrics(y_true, y_pred, class_names)
 
+                log_experiment(
+                    model_name=model_name,
+                    feature_set_name=feature_set_name,
+                    test_name=test_name,
+                    params=best_params,
+                    metrics=result,
+                    metadata={
+                        "n_features": len(feature_cols),
+                        "train_size": len(train_df),
+                        "val_size": len(val_df),
+                        "test_size": len(test_df),
+                    },
+                )
+
                 print(f"\nTest set: {test_name}")
                 print(result["overall"])
 
@@ -540,3 +557,41 @@ def run_experiment_suite(
                 )
 
     return pd.DataFrame(all_results)
+
+
+def log_experiment(
+    model_name,
+    feature_set_name,
+    test_name,
+    params,
+    metrics,
+    metadata=None,
+    root_dir="results",
+):
+    # --- timestamp ---
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+
+    # --- directory: results/model_name/ ---
+    model_dir = os.path.join(root_dir, model_name)
+    os.makedirs(model_dir, exist_ok=True)
+
+    # --- filename ---
+    filename = f"{model_name}_{feature_set_name}_{test_name}_{timestamp}.json"
+    filepath = os.path.join(model_dir, filename)
+
+    # --- build log dict ---
+    log_data = {
+        "model": model_name,
+        "feature_set": feature_set_name,
+        "test_set": test_name,
+        "timestamp": timestamp,
+        "params": params,
+        "metrics": metrics,
+        "metadata": metadata or {},
+    }
+
+    # --- save ---
+    with open(filepath, "w") as f:
+        json.dump(log_data, f, indent=4)
+
+    print(f"[LOGGED] {filepath}")
