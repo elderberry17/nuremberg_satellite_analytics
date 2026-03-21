@@ -13,7 +13,7 @@ from models.model_utils import (
     get_dt_hpo_model,
     get_mlp_hpo_model,
 )
-from feature_engineering.generate_datasets import read_dataset, split_train_val
+from feature_engineering.generate_datasets import read_train_test_datasets, split_train_val
 
 from config import (
     FEATURE_COLS_BASELINE,
@@ -30,13 +30,15 @@ TODO:
 
 
 def main():
-    train_df, test_spatial, _, test_spatial_temporal = read_dataset(
-        "./datasets_kernel101_stride101"
+    train_df, test_spatial = read_train_test_datasets(
+        "data/v1/train_df.pq",
+        "data/v1/test_spatial.pq"
     )
 
+    # only spatial so far
     test_sets = {
         "spatial": test_spatial,
-        "spatial_temporal": test_spatial_temporal,
+        # "spatial_temporal": test_spatial_temporal,
     }
 
     model_getters = {
