@@ -627,6 +627,7 @@ def log_experiment(
     metrics,
     preds_df,
     experiment_id,
+    task_type,
     metadata=None,
     root_dir="results",
 ):
@@ -639,7 +640,7 @@ def log_experiment(
     os.makedirs(model_dir, exist_ok=True)
 
     # --- filename ---
-    filename = f"{model_name}_{feature_set_name}_{test_name}_{timestamp}.json"
+    filename = f"{task_type}_{model_name}_{feature_set_name}_{test_name}_{timestamp}.json"
     filepath = os.path.join(model_dir, filename)
 
     # --- build log dict ---
@@ -652,6 +653,7 @@ def log_experiment(
         "params": params,
         "metrics": metrics,
         "metadata": metadata or {},
+        "task_type": task_type
     }
 
     model_filename = filename.replace(".json", ".pkl")
@@ -677,7 +679,7 @@ def log_experiment(
 def save_predictions(test_df, y_true, y_pred, target_cols):
     assert y_pred.shape == y_true.shape
 
-    df = test_df[["image_id", "timestamp", "x", "y"]].copy()
+    df = test_df[['centroid_x', 'centroid_y']].copy()
     pred_cols = [f"pred_{col}" for col in target_cols]
     true_cols = [f"true_{col}" for col in target_cols]
 
