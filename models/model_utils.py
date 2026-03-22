@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 import yaml
 import json
+import pickle
 from datetime import datetime
 
 
@@ -217,6 +218,11 @@ def get_lgbm_hpo_model(X_train, y_train, X_val, y_val, n_trials=20, seed=42):
             "colsample_bytree": trial.suggest_float(
                 "colsample_bytree", 0.6, 1.0
             ),
+            "num_leaves": trial.suggest_int("num_leaves", 15, 255),
+            "min_child_samples": trial.suggest_int("min_child_samples", 5, 50),
+            "min_gain_to_split": trial.suggest_float(
+                "min_gain_to_split", 0.0, 1.0
+            ),
         }
 
         model = Pipeline(
@@ -404,10 +410,19 @@ def get_dt_hpo_model(X_train, y_train, X_val, y_val, n_trials=20, seed=42):
 
 def get_mlp_hpo_model(X_train, y_train, X_val, y_val, n_trials=20, seed=42):
     def objective(trial):
+        layer_choice = trial.suggest_categorical(
+            "hidden_layer_sizes", ["64", "128", "64_64", "128_64"]
+        )
+
+        layer_map = {
+            "64": (64,),
+            "128": (128,),
+            "64_64": (64, 64),
+            "128_64": (128, 64),
+        }
+
         params = {
-            "hidden_layer_sizes": trial.suggest_categorical(
-                "hidden_layer_sizes", [(64,), (128,), (64, 64), (128, 64)]
-            ),
+            "hidden_layer_sizes": layer_map[layer_choice],
             "alpha": trial.suggest_float("alpha", 1e-5, 1e-1, log=True),
             "learning_rate_init": trial.suggest_float(
                 "learning_rate_init", 1e-4, 1e-2, log=True
@@ -437,6 +452,16 @@ def get_mlp_hpo_model(X_train, y_train, X_val, y_val, n_trials=20, seed=42):
     study.optimize(objective, n_trials=n_trials)
 
     best_params = study.best_params
+    layer_map = {
+        "64": (64,),
+        "128": (128,),
+        "64_64": (64, 64),
+        "128_64": (128, 64),
+    }
+
+    best_params["hidden_layer_sizes"] = layer_map[
+        best_params["hidden_layer_sizes"]
+    ]
 
     best_model = Pipeline(
         [
@@ -488,13 +513,14 @@ def run_experiment_suite(
     model_getters: dict[str, callable],
 ):
     all_results = []
+    experiment_id = datetime.now().strftime("exp_%Y-%m-%d_%H-%M-%S")
 
     for model_name, get_model_fn in model_getters.items():
-        print("=" * 120)
+        print("=" * 60)
         print(f"MODEL: {model_name}")
 
         for feature_set_name, feature_cols in feature_sets.items():
-            print("-" * 120)
+            print("-" * 60)
             print(
                 f"FEATURE SET: {feature_set_name} ({len(feature_cols)} feat.s)"
             )
@@ -506,6 +532,7 @@ def run_experiment_suite(
             X_val = val_df[feature_cols]
             y_val = val_df[target_cols].to_numpy()
 
+            print(f"HPO for {model_name}")
             # HPO (returns best model)
             model, best_params, _ = get_model_fn(
                 X_train, y_train, X_val, y_val
@@ -514,8 +541,10 @@ def run_experiment_suite(
             print(f"Best params: {best_params}")
 
             for test_name, test_df in test_sets.items():
+                print(f"Training with test set: {test_name}")
+
                 # fit + predict
-                _, y_true, y_pred = fit_and_predict(
+                model, y_true, y_pred = fit_and_predict(
                     model,
                     train_df,
                     test_df,
@@ -526,12 +555,22 @@ def run_experiment_suite(
                 # evaluate
                 result = evaluate_all_metrics(y_true, y_pred, class_names)
 
+                preds_df = save_predictions(
+                    test_df=test_df,
+                    y_true=y_true,
+                    y_pred=y_pred,
+                    target_cols=target_cols,
+                )
+
                 log_experiment(
                     model_name=model_name,
+                    model=model,
                     feature_set_name=feature_set_name,
                     test_name=test_name,
                     params=best_params,
                     metrics=result,
+                    preds_df=preds_df,
+                    experiment_id=experiment_id,
                     metadata={
                         "n_features": len(feature_cols),
                         "train_size": len(train_df),
@@ -540,7 +579,7 @@ def run_experiment_suite(
                     },
                 )
 
-                print(f"\nTest set: {test_name}")
+                print(f"\nResults for test set: {test_name}")
                 print(result["overall"])
 
                 all_results.append(
@@ -561,10 +600,13 @@ def run_experiment_suite(
 
 def log_experiment(
     model_name,
+    model,
     feature_set_name,
     test_name,
     params,
     metrics,
+    preds_df,
+    experiment_id,
     metadata=None,
     root_dir="results",
 ):
@@ -572,7 +614,8 @@ def log_experiment(
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
     # --- directory: results/model_name/ ---
-    model_dir = os.path.join(root_dir, model_name)
+    exp_dir = os.path.join(root_dir, experiment_id)
+    model_dir = os.path.join(exp_dir, model_name)
     os.makedirs(model_dir, exist_ok=True)
 
     # --- filename ---
@@ -591,8 +634,38 @@ def log_experiment(
         "metadata": metadata or {},
     }
 
+    model_filename = filename.replace(".json", ".pkl")
+    model_path = os.path.join(model_dir, model_filename)
+
+    with open(model_path, "wb") as f:
+        pickle.dump(model, f)
+
+    log_data["model_path"] = model_path
+
+    preds_filename = filename.replace(".json", "_preds.csv")
+    preds_path = os.path.join(model_dir, preds_filename)
+    preds_df.to_csv(preds_path, index=False)
+    log_data["predictions_path"] = preds_path
+
     # --- save ---
     with open(filepath, "w") as f:
         json.dump(log_data, f, indent=4)
 
     print(f"[LOGGED] {filepath}")
+
+
+def save_predictions(test_df, y_true, y_pred, target_cols):
+    assert y_pred.shape == y_true.shape
+
+    df = test_df[["image_id", "timestamp", "x", "y"]].copy()
+    pred_cols = [f"pred_{col}" for col in target_cols]
+    true_cols = [f"true_{col}" for col in target_cols]
+
+    for i, col in enumerate(pred_cols):
+        df[col] = y_pred[:, i]
+
+    # Add ground truth
+    for i, col in enumerate(true_cols):
+        df[col] = y_true[:, i]
+
+    return df

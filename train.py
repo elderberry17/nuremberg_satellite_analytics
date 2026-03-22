@@ -13,7 +13,10 @@ from models.model_utils import (
     get_dt_hpo_model,
     get_mlp_hpo_model,
 )
-from feature_engineering.generate_datasets import read_train_test_datasets, split_train_val
+from feature_engineering.generate_datasets import (
+    read_dataset,
+    split_train_val,
+)
 
 from config import (
     FEATURE_COLS_BASELINE,
@@ -30,10 +33,14 @@ TODO:
 
 
 def main():
-    train_df, test_spatial = read_train_test_datasets(
-        "data/v1/train_df.pq",
-        "data/v1/test_spatial.pq"
-    )
+    (
+        train_df,
+        test_spatial,
+    ) = read_dataset("./datasets/v2/")
+
+    # print(train_df.head(5))
+    # print(test_spatial.head(5))
+    # return
 
     # only spatial so far
     test_sets = {
@@ -41,15 +48,18 @@ def main():
         # "spatial_temporal": test_spatial_temporal,
     }
 
+    # print(train_df.shape, test_spatial.shape)
+    # return
+
     model_getters = {
-        "ridge": get_ridge_hpo_model,
-        "rf": get_rf_hpo_model,
-        "xgb": get_xgb_hpo_model,
-        "lgbm": get_lgbm_hpo_model,
-        "catboost": get_catboost_hpo_model,
+        # "ridge": get_ridge_hpo_model,
+        # "rf": get_rf_hpo_model,
+        # "xgb": get_xgb_hpo_model,
+        # "lgbm": get_lgbm_hpo_model,
+        # "catboost": get_catboost_hpo_model,
         "knn": get_knn_hpo_model,
         "dt": get_dt_hpo_model,
-        "mlp": get_mlp_hpo_model,
+        # "mlp": get_mlp_hpo_model,
     }
 
     feature_sets = {
