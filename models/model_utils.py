@@ -25,7 +25,10 @@ from xgboost import XGBRegressor
 from lightgbm import LGBMRegressor
 from catboost import CatBoostRegressor
 
-from evaluation.metric_utils import evaluate_all_metrics
+from evaluation.metric_utils import (
+    evaluate_change_metrics,
+    evaluate_composition_metrics,
+)
 
 from config import ROOT_NAME
 
@@ -483,6 +486,7 @@ def fit_and_predict(
     test_df,
     feature_cols,
     target_cols,
+    task_type="composition",
 ):
     # prepare data
     X_train = train_df[feature_cols]
@@ -498,7 +502,8 @@ def fit_and_predict(
     y_pred = model.predict(X_test)
 
     # normalize to distribution
-    y_pred = normalize_predictions_to_simplex(y_pred)
+    if task_type == "composition":
+        y_pred = normalize_predictions_to_simplex(y_pred)
 
     return model, y_test, y_pred
 
@@ -511,9 +516,12 @@ def run_experiment_suite(
     target_cols: list[str],
     class_names: list[str],
     model_getters: dict[str, callable],
+    task_type="composition",
 ):
     all_results = []
-    experiment_id = datetime.now().strftime("exp_%Y-%m-%d_%H-%M-%S")
+    experiment_id = datetime.now().strftime(
+        f"exp_%Y-%m-%d_%H-%M-%S-{task_type}"
+    )
 
     for model_name, get_model_fn in model_getters.items():
         print("=" * 60)
@@ -550,10 +558,23 @@ def run_experiment_suite(
                     test_df,
                     feature_cols,
                     target_cols,
+                    task_type,
                 )
 
                 # evaluate
-                result = evaluate_all_metrics(y_true, y_pred, class_names)
+                if task_type == "composition":
+                    result = evaluate_composition_metrics(
+                        y_true, y_pred, class_names
+                    )
+                elif task_type == "change":
+                    result = evaluate_change_metrics(
+                        y_true, y_pred, class_names
+                    )
+                else:
+                    raise ValueError(f"Unknown task_type: {task_type}")
+
+                # evaluate
+                # result = evaluate_all_metrics(y_true, y_pred, class_names)
 
                 preds_df = save_predictions(
                     test_df=test_df,
@@ -564,6 +585,7 @@ def run_experiment_suite(
 
                 log_experiment(
                     model_name=model_name,
+                    task_type=task_type,
                     model=model,
                     feature_set_name=feature_set_name,
                     test_name=test_name,
@@ -582,18 +604,16 @@ def run_experiment_suite(
                 print(f"\nResults for test set: {test_name}")
                 print(result["overall"])
 
-                all_results.append(
-                    {
-                        "model": model_name,
-                        "feature_set": feature_set_name,
-                        "test_set": test_name,
-                        "n_features": len(feature_cols),
-                        "mae_macro": result["overall"]["mae_macro"],
-                        "rmse_macro": result["overall"]["rmse_macro"],
-                        "r2_macro": result["overall"]["r2_macro"],
-                        "kl": result["overall"]["kl"],
-                    }
-                )
+                row = {
+                    "model": model_name,
+                    "feature_set": feature_set_name,
+                    "test_set": test_name,
+                    "n_features": len(feature_cols),
+                }
+
+                row.update(result["overall"])  # 👈 works for both tasks
+
+                all_results.append(row)
 
     return pd.DataFrame(all_results)
 

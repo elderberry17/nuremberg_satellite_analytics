@@ -52,7 +52,7 @@ def kl_divergence(y_true, y_pred, eps=1e-10):
     return np.mean(np.sum(y_true * np.log(y_true / y_pred), axis=1))
 
 
-def evaluate_all_metrics(y_true, y_pred, class_names):
+def evaluate_composition_metrics(y_true, y_pred, class_names):
     results = {}
 
     # --- overall (macro) ---
@@ -121,5 +121,33 @@ def per_class_direction_accuracy(y_true, y_pred, class_names):
         pred_sign = np.sign(y_pred[:, i])
 
         results[name] = float(np.mean(true_sign == pred_sign))
+
+    return results
+
+
+def evaluate_change_metrics(y_true, y_pred, class_names, threshold=1e-3):
+    results = {}
+
+    # --- overall ---
+    results["overall"] = {
+        "mcr": mcr(
+            y_true, y_pred, threshold
+        ),  # missed change rate (recall-like)
+        "fcr": fcr(y_true, y_pred, threshold),  # false change ratio
+        "direction_accuracy": direction_accuracy(y_true, y_pred),
+    }
+
+    # --- per-class ---
+    results["per_class"] = {}
+
+    for i, name in enumerate(class_names):
+        yt = y_true[:, i]
+        yp = y_pred[:, i]
+
+        results["per_class"][name] = {
+            "mcr": mcr(yt, yp, threshold),
+            "fcr": fcr(yt, yp, threshold),
+            "direction_accuracy": float(np.mean(np.sign(yt) == np.sign(yp))),
+        }
 
     return results
