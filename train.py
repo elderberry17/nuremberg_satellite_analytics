@@ -39,12 +39,14 @@ def main():
     (
         train_df,
         test_spatial,
-    ) = read_dataset("./data/tplus1_j/")
+    ) = read_dataset("./data/delta_j/")
 
     # only spatial so far
     test_sets = {
         "spatial": test_spatial,
     }
+
+    root_dir = "results_repro"
 
     model_getters = {
         "ridge": get_ridge_hpo_model,
@@ -77,10 +79,11 @@ def main():
         val_df=val_df,
         test_sets=test_sets,
         feature_sets=feature_sets,
-        target_cols=TARGET_COLS_TPLUS1_J,
+        target_cols=TARGET_COLS_DELTA_J,
         class_names=class_names,
         model_getters=model_getters,
-        task_type="change"
+        task_type="composition",
+        root_dir=root_dir
     )
 
 

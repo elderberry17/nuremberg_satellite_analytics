@@ -501,11 +501,20 @@ def fit_and_predict(
     # predict
     y_pred = model.predict(X_test)
 
+    # predict_noisy
+    noise_light = np.random.normal(loc=0.0, scale=0.01 * X_test.std(), size=len(X_test))
+    noise_strong = np.random.normal(loc=0.0, scale=0.1 * X_test.std(), size=len(X_test))
+
+    y_pred_noise_light = model.predict(X_test + noise_light)
+    y_pred_noise_strong = model.predict(X_test + noise_strong)
+
     # normalize to distribution
     if task_type == "composition":
         y_pred = normalize_predictions_to_simplex(y_pred)
+        y_pred_noise_light = normalize_predictions_to_simplex(y_pred_noise_light)
+        y_pred_noise_strong = normalize_predictions_to_simplex(y_pred_noise_strong)
 
-    return model, y_test, y_pred
+    return model, y_test, y_pred, y_pred_noise_light, y_pred_noise_strong
 
 
 def run_experiment_suite(
@@ -516,6 +525,7 @@ def run_experiment_suite(
     target_cols: list[str],
     class_names: list[str],
     model_getters: dict[str, callable],
+    root_dir: str,
     task_type="composition",
 ):
     all_results = []
@@ -552,7 +562,8 @@ def run_experiment_suite(
                 print(f"Training with test set: {test_name}")
 
                 # fit + predict
-                model, y_true, y_pred = fit_and_predict(
+                model, y_true, y_pred, \
+                y_pred_noise_light, y_pred_noise_strong = fit_and_predict(
                     model,
                     train_df,
                     test_df,
@@ -593,6 +604,7 @@ def run_experiment_suite(
                     metrics=result,
                     preds_df=preds_df,
                     experiment_id=experiment_id,
+                    root_dir=root_dir,
                     metadata={
                         "n_features": len(feature_cols),
                         "train_size": len(train_df),
