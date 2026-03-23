@@ -994,10 +994,8 @@ def log_experiment(
         stress_result_light=stress_result_light,
         stress_result_strong=stress_result_strong,
         model_name=model_name,
-        feature_set_name=feature_set_name,
-        test_name=test_name,
-        task_type=task_type,
         save_path=stress_plot_path,
+        task_type=task_type,
     )
 
     scatter_plot_filename = filename.replace(".json", "_scatter.png")
