@@ -201,3 +201,33 @@ def plot_stress_test(
     plt.grid(True)
     plt.savefig(save_path)
     plt.close()
+
+
+def save_scatter_pred_vs_true(
+    y_true,
+    y_pred,
+    class_names,
+    model_name,
+    save_path,
+):
+    n_classes = y_true.shape[1]
+
+    plt.figure(figsize=(5 * n_classes, 4))
+
+    for i in range(n_classes):
+        plt.subplot(1, n_classes, i + 1)
+
+        plt.scatter(y_true[:, i], y_pred[:, i], alpha=0.3)
+
+        # perfect prediction line
+        plt.plot([0, 1], [0, 1])
+
+        plt.xlabel("True")
+        plt.ylabel("Pred")
+        plt.title(class_names[i])
+
+    plt.suptitle(f"{model_name} - Pred vs True")
+    plt.tight_layout()
+
+    plt.savefig(save_path)
+    plt.close()

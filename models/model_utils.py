@@ -25,7 +25,11 @@ from xgboost import XGBRegressor
 from lightgbm import LGBMRegressor
 from catboost import CatBoostRegressor
 
-from evaluation.metric_utils import evaluate_metrics, plot_stress_test
+from evaluation.metric_utils import (
+    evaluate_metrics,
+    plot_stress_test,
+    save_scatter_pred_vs_true,
+)
 
 from config import ROOT_NAME
 
@@ -879,6 +883,7 @@ def run_experiment_suite(
                 log_experiment(
                     model_name=model_name,
                     task_type=task_type,
+                    target_cols=target_cols,
                     model=model,
                     feature_set_name=feature_set_name,
                     test_name=test_name,
@@ -918,6 +923,8 @@ def run_experiment_suite(
 
 def log_experiment(
     model_name,
+    task_type,
+    target_cols,
     model,
     feature_set_name,
     test_name,
@@ -929,9 +936,8 @@ def log_experiment(
     val_result,
     val_preds_df,
     experiment_id,
-    task_type,
-    metadata=None,
     root_dir="results",
+    metadata=None,
 ):
     # --- timestamp ---
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -993,6 +999,19 @@ def log_experiment(
         task_type=task_type,
         save_path=stress_plot_path,
     )
+
+    scatter_plot_filename = filename.replace(".json", "_scatter.png")
+    scatter_plot_path = os.path.join(model_dir, scatter_plot_filename)
+
+    save_scatter_pred_vs_true(
+        y_true=preds_df[[f"true_{c}" for c in target_cols]].values,
+        y_pred=preds_df[[f"pred_{c}" for c in target_cols]].values,
+        class_names=target_cols,
+        model_name=model_name,
+        save_path=scatter_plot_path,
+    )
+
+    log_data["scatter_plot"] = scatter_plot_path
 
     # --- save ---
     with open(filepath, "w") as f:
