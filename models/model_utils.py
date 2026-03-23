@@ -25,7 +25,7 @@ from xgboost import XGBRegressor
 from lightgbm import LGBMRegressor
 from catboost import CatBoostRegressor
 
-from evaluation.metric_utils import evaluate_metrics
+from evaluation.metric_utils import evaluate_metrics, plot_stress_test
 
 from config import ROOT_NAME
 
@@ -979,6 +979,20 @@ def log_experiment(
     preds_path = os.path.join(model_dir, preds_filename)
     preds_df.to_csv(preds_path, index=False)
     log_data["predictions_path"] = preds_path
+
+    stress_plot_filename = filename.replace(".json", "_stress.png")
+    stress_plot_path = os.path.join(model_dir, stress_plot_filename)
+
+    plot_stress_test(
+        result=result,
+        stress_result_light=stress_result_light,
+        stress_result_strong=stress_result_strong,
+        model_name=model_name,
+        feature_set_name=feature_set_name,
+        test_name=test_name,
+        task_type=task_type,
+        save_path=stress_plot_path,
+    )
 
     # --- save ---
     with open(filepath, "w") as f:

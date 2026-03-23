@@ -1,4 +1,5 @@
 import numpy as np
+import matplotlib.pyplot as plt
 
 
 def mae(y_true, y_pred):
@@ -158,3 +159,45 @@ def evaluate_metrics(y_true, y_pred, class_names, task_type, **kwargs):
         return evaluate_composition_metrics(y_true, y_pred, class_names)
     elif task_type == "change":
         return evaluate_change_metrics(y_true, y_pred, class_names, **kwargs)
+
+
+def plot_stress_test(
+    result,
+    stress_result_light,
+    stress_result_strong,
+    model_name,
+    save_path,
+    task_type="composition",
+):
+    # --- select metric ---
+    if task_type == "composition":
+        metric_name = "rmse_macro"
+    elif task_type == "change":
+        metric_name = "direction_accuracy"
+    else:
+        raise ValueError(f"Unknown task_type: {task_type}")
+
+    # --- extract values ---
+    values = [
+        result["overall"][metric_name],
+        stress_result_light["overall"][metric_name],
+        stress_result_strong["overall"][metric_name],
+    ]
+
+    labels = ["clean", "light_noise", "strong_noise"]
+
+    # --- plot ---
+    plt.figure(figsize=(6, 4))
+    plt.plot(labels, values, marker="o")
+
+    plt.title(f"Stress Test - {model_name}")
+    plt.xlabel("Noise Level")
+    plt.ylabel(metric_name)
+
+    # invert y-axis for RMSE? (optional)
+    # if task_type == "composition":
+    #     plt.gca().invert_yaxis()
+
+    plt.grid(True)
+    plt.savefig(save_path)
+    plt.close()
