@@ -151,3 +151,10 @@ def evaluate_change_metrics(y_true, y_pred, class_names, threshold=1e-3):
         }
 
     return results
+
+
+def evaluate_metrics(y_true, y_pred, class_names, task_type, **kwargs):
+    if task_type == "composition":
+        return evaluate_composition_metrics(y_true, y_pred, class_names)
+    elif task_type == "change":
+        return evaluate_change_metrics(y_true, y_pred, class_names, **kwargs)

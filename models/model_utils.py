@@ -25,10 +25,7 @@ from xgboost import XGBRegressor
 from lightgbm import LGBMRegressor
 from catboost import CatBoostRegressor
 
-from evaluation.metric_utils import (
-    evaluate_change_metrics,
-    evaluate_composition_metrics,
-)
+from evaluation.metric_utils import evaluate_metrics
 
 from config import ROOT_NAME
 
@@ -67,8 +64,21 @@ def normalize_predictions_to_simplex(
     return y_pred
 
 
-def get_ridge_hpo_model(X_train, y_train, X_val, y_val, n_trials=20, seed=42):
+def get_ridge_hpo_model(
+    X_train,
+    y_train,
+    X_val,
+    y_val,
+    class_names,
+    task_type="composition",
+    n_trials=20,
+    seed=42,
+):
+    best_result = {"score": float("inf"), "metrics": None, "y_pred": None}
+
     def objective(trial):
+        nonlocal best_result
+
         alpha = trial.suggest_float("alpha", 1e-4, 100, log=True)
 
         model = Pipeline(
@@ -82,29 +92,55 @@ def get_ridge_hpo_model(X_train, y_train, X_val, y_val, n_trials=20, seed=42):
         model.fit(X_train, y_train)
         y_pred = model.predict(X_val)
 
-        rmse = np.sqrt(mean_squared_error(y_val, y_pred))
-        return rmse
+        if task_type == "composition":
+            y_pred = normalize_predictions_to_simplex(y_pred)
 
-    sampler = optuna.samplers.TPESampler(seed=seed)
+        metrics = evaluate_metrics(y_val, y_pred, class_names, task_type)
 
-    study = optuna.create_study(direction="minimize", sampler=sampler)
+        score = (
+            metrics["overall"]["rmse_macro"]
+            if task_type == "composition"
+            else 1 - metrics["overall"]["direction_accuracy"]
+        )
+
+        if score < best_result["score"]:
+            best_result.update(
+                {"score": score, "metrics": metrics, "y_pred": y_pred}
+            )
+
+        return score
+
+    study = optuna.create_study(
+        direction="minimize", sampler=optuna.samplers.TPESampler(seed=seed)
+    )
     study.optimize(objective, n_trials=n_trials)
-
-    best_params = study.best_params
 
     best_model = Pipeline(
         [
             ("imputer", SimpleImputer(strategy="median")),
             ("scaler", StandardScaler()),
-            ("regressor", Ridge(**best_params)),
+            ("regressor", Ridge(**study.best_params)),
         ]
     )
 
-    return best_model, best_params, study
+    return best_model, study.best_params, study, best_result
 
 
-def get_rf_hpo_model(X_train, y_train, X_val, y_val, n_trials=20, seed=42):
+def get_rf_hpo_model(
+    X_train,
+    y_train,
+    X_val,
+    y_val,
+    class_names,
+    task_type="composition",
+    n_trials=20,
+    seed=42,
+):
+    best_result = {"score": float("inf"), "metrics": None, "y_pred": None}
+
     def objective(trial):
+        nonlocal best_result
+
         params = {
             "n_estimators": trial.suggest_int("n_estimators", 100, 400),
             "max_depth": trial.suggest_int("max_depth", 3, 20),
@@ -130,15 +166,28 @@ def get_rf_hpo_model(X_train, y_train, X_val, y_val, n_trials=20, seed=42):
         model.fit(X_train, y_train)
         y_pred = model.predict(X_val)
 
-        rmse = np.sqrt(mean_squared_error(y_val, y_pred))
-        return rmse
+        if task_type == "composition":
+            y_pred = normalize_predictions_to_simplex(y_pred)
 
-    sampler = optuna.samplers.TPESampler(seed=seed)
+        metrics = evaluate_metrics(y_val, y_pred, class_names, task_type)
 
-    study = optuna.create_study(direction="minimize", sampler=sampler)
+        score = (
+            metrics["overall"]["rmse_macro"]
+            if task_type == "composition"
+            else 1 - metrics["overall"]["direction_accuracy"]
+        )
+
+        if score < best_result["score"]:
+            best_result.update(
+                {"score": score, "metrics": metrics, "y_pred": y_pred}
+            )
+
+        return score
+
+    study = optuna.create_study(
+        direction="minimize", sampler=optuna.samplers.TPESampler(seed=seed)
+    )
     study.optimize(objective, n_trials=n_trials)
-
-    best_params = study.best_params
 
     best_model = Pipeline(
         [
@@ -146,17 +195,34 @@ def get_rf_hpo_model(X_train, y_train, X_val, y_val, n_trials=20, seed=42):
             (
                 "regressor",
                 RandomForestRegressor(
-                    **best_params, random_state=seed, n_jobs=1
+                    **study.best_params, random_state=seed, n_jobs=1
                 ),
             ),
         ]
     )
 
-    return best_model, best_params, study
+    return best_model, study.best_params, study, best_result
 
 
-def get_xgb_hpo_model(X_train, y_train, X_val, y_val, n_trials=20, seed=42):
+def get_xgb_hpo_model(
+    X_train,
+    y_train,
+    X_val,
+    y_val,
+    class_names,
+    task_type="composition",
+    n_trials=20,
+    seed=42,
+):
+    best_result = {
+        "score": float("inf"),
+        "metrics": None,
+        "y_pred": None,
+    }
+
     def objective(trial):
+        nonlocal best_result
+
         params = {
             "n_estimators": trial.suggest_int("n_estimators", 100, 400),
             "max_depth": trial.suggest_int("max_depth", 3, 10),
@@ -174,7 +240,10 @@ def get_xgb_hpo_model(X_train, y_train, X_val, y_val, n_trials=20, seed=42):
                     "regressor",
                     MultiOutputRegressor(
                         XGBRegressor(
-                            **params, random_state=seed, n_jobs=1, verbosity=0
+                            **params,
+                            random_state=seed,
+                            n_jobs=1,
+                            verbosity=0,
                         )
                     ),
                 ),
@@ -184,8 +253,24 @@ def get_xgb_hpo_model(X_train, y_train, X_val, y_val, n_trials=20, seed=42):
         model.fit(X_train, y_train)
         y_pred = model.predict(X_val)
 
-        rmse = np.sqrt(mean_squared_error(y_val, y_pred))
-        return rmse
+        if task_type == "composition":
+            y_pred = normalize_predictions_to_simplex(y_pred)
+
+        metrics = evaluate_metrics(y_val, y_pred, class_names, task_type)
+
+        if task_type == "composition":
+            score = metrics["overall"]["rmse_macro"]
+        elif task_type == "change":
+            score = 1 - metrics["overall"]["direction_accuracy"]
+        else:
+            raise ValueError(f"Unknown task_type: {task_type}")
+
+        if score < best_result["score"]:
+            best_result["score"] = score
+            best_result["metrics"] = metrics
+            best_result["y_pred"] = y_pred
+
+        return score
 
     sampler = optuna.samplers.TPESampler(seed=seed)
 
@@ -201,18 +286,38 @@ def get_xgb_hpo_model(X_train, y_train, X_val, y_val, n_trials=20, seed=42):
                 "regressor",
                 MultiOutputRegressor(
                     XGBRegressor(
-                        **best_params, random_state=seed, n_jobs=1, verbosity=0
+                        **best_params,
+                        random_state=seed,
+                        n_jobs=1,
+                        verbosity=0,
                     )
                 ),
             ),
         ]
     )
 
-    return best_model, best_params, study
+    return best_model, best_params, study, best_result
 
 
-def get_lgbm_hpo_model(X_train, y_train, X_val, y_val, n_trials=20, seed=42):
+def get_lgbm_hpo_model(
+    X_train,
+    y_train,
+    X_val,
+    y_val,
+    class_names,
+    task_type="composition",
+    n_trials=20,
+    seed=42,
+):
+    best_result = {
+        "score": float("inf"),
+        "metrics": None,
+        "y_pred": None,
+    }
+
     def objective(trial):
+        nonlocal best_result
+
         params = {
             "n_estimators": trial.suggest_int("n_estimators", 100, 400),
             "max_depth": trial.suggest_int("max_depth", -1, 15),
@@ -243,8 +348,24 @@ def get_lgbm_hpo_model(X_train, y_train, X_val, y_val, n_trials=20, seed=42):
         model.fit(X_train, y_train)
         y_pred = model.predict(X_val)
 
-        rmse = np.sqrt(mean_squared_error(y_val, y_pred))
-        return rmse
+        if task_type == "composition":
+            y_pred = normalize_predictions_to_simplex(y_pred)
+
+        metrics = evaluate_metrics(y_val, y_pred, class_names, task_type)
+
+        if task_type == "composition":
+            score = metrics["overall"]["rmse_macro"]
+        elif task_type == "change":
+            score = 1 - metrics["overall"]["direction_accuracy"]
+        else:
+            raise ValueError(f"Unknown task_type: {task_type}")
+
+        if score < best_result["score"]:
+            best_result["score"] = score
+            best_result["metrics"] = metrics
+            best_result["y_pred"] = y_pred
+
+        return score
 
     sampler = optuna.samplers.TPESampler(seed=seed)
 
@@ -265,13 +386,28 @@ def get_lgbm_hpo_model(X_train, y_train, X_val, y_val, n_trials=20, seed=42):
         ]
     )
 
-    return best_model, best_params, study
+    return best_model, best_params, study, best_result
 
 
 def get_catboost_hpo_model(
-    X_train, y_train, X_val, y_val, n_trials=20, seed=42
+    X_train,
+    y_train,
+    X_val,
+    y_val,
+    class_names,
+    task_type="composition",
+    n_trials=20,
+    seed=42,
 ):
+    best_result = {
+        "score": float("inf"),
+        "metrics": None,
+        "y_pred": None,
+    }
+
     def objective(trial):
+        nonlocal best_result
+
         params = {
             "iterations": trial.suggest_int("iterations", 100, 400),
             "depth": trial.suggest_int("depth", 3, 10),
@@ -295,8 +431,24 @@ def get_catboost_hpo_model(
         model.fit(X_train, y_train)
         y_pred = model.predict(X_val)
 
-        rmse = np.sqrt(mean_squared_error(y_val, y_pred))
-        return rmse
+        if task_type == "composition":
+            y_pred = normalize_predictions_to_simplex(y_pred)
+
+        metrics = evaluate_metrics(y_val, y_pred, class_names, task_type)
+
+        if task_type == "composition":
+            score = metrics["overall"]["rmse_macro"]
+        elif task_type == "change":
+            score = 1 - metrics["overall"]["direction_accuracy"]
+        else:
+            raise ValueError(f"Unknown task_type: {task_type}")
+
+        if score < best_result["score"]:
+            best_result["score"] = score
+            best_result["metrics"] = metrics
+            best_result["y_pred"] = y_pred
+
+        return score
 
     sampler = optuna.samplers.TPESampler(seed=seed)
 
@@ -319,23 +471,40 @@ def get_catboost_hpo_model(
         ]
     )
 
-    return best_model, best_params, study
+    return best_model, best_params, study, best_result
 
 
-def get_knn_hpo_model(X_train, y_train, X_val, y_val, n_trials=20, seed=42):
+def get_knn_hpo_model(
+    X_train,
+    y_train,
+    X_val,
+    y_val,
+    class_names,
+    task_type="composition",
+    n_trials=20,
+    seed=42,
+):
+    best_result = {
+        "score": float("inf"),
+        "metrics": None,
+        "y_pred": None,
+    }
+
     def objective(trial):
+        nonlocal best_result
+
         params = {
             "n_neighbors": trial.suggest_int("n_neighbors", 3, 50),
             "weights": trial.suggest_categorical(
                 "weights", ["uniform", "distance"]
             ),
-            "p": trial.suggest_int("p", 1, 2),  # 1=manhattan, 2=euclidean
+            "p": trial.suggest_int("p", 1, 2),
         }
 
         model = Pipeline(
             [
                 ("imputer", SimpleImputer(strategy="median")),
-                ("scaler", StandardScaler()),  # IMPORTANT for KNN
+                ("scaler", StandardScaler()),
                 ("regressor", KNeighborsRegressor(**params)),
             ]
         )
@@ -343,12 +512,29 @@ def get_knn_hpo_model(X_train, y_train, X_val, y_val, n_trials=20, seed=42):
         model.fit(X_train, y_train)
         y_pred = model.predict(X_val)
 
-        rmse = np.sqrt(mean_squared_error(y_val, y_pred))
-        return rmse
+        if task_type == "composition":
+            y_pred = normalize_predictions_to_simplex(y_pred)
 
-    sampler = optuna.samplers.TPESampler(seed=seed)
+        metrics = evaluate_metrics(y_val, y_pred, class_names, task_type)
 
-    study = optuna.create_study(direction="minimize", sampler=sampler)
+        if task_type == "composition":
+            score = metrics["overall"]["rmse_macro"]
+        elif task_type == "change":
+            score = 1 - metrics["overall"]["direction_accuracy"]
+        else:
+            raise ValueError(f"Unknown task_type: {task_type}")
+
+        if score < best_result["score"]:
+            best_result["score"] = score
+            best_result["metrics"] = metrics
+            best_result["y_pred"] = y_pred
+
+        return score
+
+    study = optuna.create_study(
+        direction="minimize",
+        sampler=optuna.samplers.TPESampler(seed=seed),
+    )
     study.optimize(objective, n_trials=n_trials)
 
     best_params = study.best_params
@@ -361,11 +547,28 @@ def get_knn_hpo_model(X_train, y_train, X_val, y_val, n_trials=20, seed=42):
         ]
     )
 
-    return best_model, best_params, study
+    return best_model, best_params, study, best_result
 
 
-def get_dt_hpo_model(X_train, y_train, X_val, y_val, n_trials=20, seed=42):
+def get_dt_hpo_model(
+    X_train,
+    y_train,
+    X_val,
+    y_val,
+    class_names,
+    task_type="composition",
+    n_trials=20,
+    seed=42,
+):
+    best_result = {
+        "score": float("inf"),
+        "metrics": None,
+        "y_pred": None,
+    }
+
     def objective(trial):
+        nonlocal best_result
+
         params = {
             "max_depth": trial.suggest_int("max_depth", 3, 30),
             "min_samples_split": trial.suggest_int("min_samples_split", 2, 20),
@@ -388,8 +591,24 @@ def get_dt_hpo_model(X_train, y_train, X_val, y_val, n_trials=20, seed=42):
         model.fit(X_train, y_train)
         y_pred = model.predict(X_val)
 
-        rmse = np.sqrt(mean_squared_error(y_val, y_pred))
-        return rmse
+        if task_type == "composition":
+            y_pred = normalize_predictions_to_simplex(y_pred)
+
+        metrics = evaluate_metrics(y_val, y_pred, class_names, task_type)
+
+        if task_type == "composition":
+            score = metrics["overall"]["rmse_macro"]
+        elif task_type == "change":
+            score = 1 - metrics["overall"]["direction_accuracy"]
+        else:
+            raise ValueError(f"Unknown task_type: {task_type}")
+
+        if score < best_result["score"]:
+            best_result["score"] = score
+            best_result["metrics"] = metrics
+            best_result["y_pred"] = y_pred
+
+        return score
 
     sampler = optuna.samplers.TPESampler(seed=seed)
 
@@ -408,21 +627,38 @@ def get_dt_hpo_model(X_train, y_train, X_val, y_val, n_trials=20, seed=42):
         ]
     )
 
-    return best_model, best_params, study
+    return best_model, best_params, study, best_result
 
 
-def get_mlp_hpo_model(X_train, y_train, X_val, y_val, n_trials=20, seed=42):
+def get_mlp_hpo_model(
+    X_train,
+    y_train,
+    X_val,
+    y_val,
+    class_names,
+    task_type="composition",
+    n_trials=20,
+    seed=42,
+):
+    best_result = {
+        "score": float("inf"),
+        "metrics": None,
+        "y_pred": None,
+    }
+
+    layer_map = {
+        "64": (64,),
+        "128": (128,),
+        "64_64": (64, 64),
+        "128_64": (128, 64),
+    }
+
     def objective(trial):
+        nonlocal best_result
+
         layer_choice = trial.suggest_categorical(
             "hidden_layer_sizes", ["64", "128", "64_64", "128_64"]
         )
-
-        layer_map = {
-            "64": (64,),
-            "128": (128,),
-            "64_64": (64, 64),
-            "128_64": (128, 64),
-        }
 
         params = {
             "hidden_layer_sizes": layer_map[layer_choice],
@@ -435,10 +671,14 @@ def get_mlp_hpo_model(X_train, y_train, X_val, y_val, n_trials=20, seed=42):
         model = Pipeline(
             [
                 ("imputer", SimpleImputer(strategy="median")),
-                ("scaler", StandardScaler()),  # VERY IMPORTANT for MLP
+                ("scaler", StandardScaler()),
                 (
                     "regressor",
-                    MLPRegressor(**params, max_iter=300, random_state=seed),
+                    MLPRegressor(
+                        **params,
+                        max_iter=300,
+                        random_state=seed,
+                    ),
                 ),
             ]
         )
@@ -446,8 +686,24 @@ def get_mlp_hpo_model(X_train, y_train, X_val, y_val, n_trials=20, seed=42):
         model.fit(X_train, y_train)
         y_pred = model.predict(X_val)
 
-        rmse = np.sqrt(mean_squared_error(y_val, y_pred))
-        return rmse
+        if task_type == "composition":
+            y_pred = normalize_predictions_to_simplex(y_pred)
+
+        metrics = evaluate_metrics(y_val, y_pred, class_names, task_type)
+
+        if task_type == "composition":
+            score = metrics["overall"]["rmse_macro"]
+        elif task_type == "change":
+            score = 1 - metrics["overall"]["direction_accuracy"]
+        else:
+            raise ValueError(f"Unknown task_type: {task_type}")
+
+        if score < best_result["score"]:
+            best_result["score"] = score
+            best_result["metrics"] = metrics
+            best_result["y_pred"] = y_pred
+
+        return score
 
     sampler = optuna.samplers.TPESampler(seed=seed)
 
@@ -455,12 +711,6 @@ def get_mlp_hpo_model(X_train, y_train, X_val, y_val, n_trials=20, seed=42):
     study.optimize(objective, n_trials=n_trials)
 
     best_params = study.best_params
-    layer_map = {
-        "64": (64,),
-        "128": (128,),
-        "64_64": (64, 64),
-        "128_64": (128, 64),
-    }
 
     best_params["hidden_layer_sizes"] = layer_map[
         best_params["hidden_layer_sizes"]
@@ -472,12 +722,16 @@ def get_mlp_hpo_model(X_train, y_train, X_val, y_val, n_trials=20, seed=42):
             ("scaler", StandardScaler()),
             (
                 "regressor",
-                MLPRegressor(**best_params, max_iter=300, random_state=seed),
+                MLPRegressor(
+                    **best_params,
+                    max_iter=300,
+                    random_state=seed,
+                ),
             ),
         ]
     )
 
-    return best_model, best_params, study
+    return best_model, best_params, study, best_result
 
 
 def fit_and_predict(
@@ -488,6 +742,8 @@ def fit_and_predict(
     target_cols,
     task_type="composition",
 ):
+    rng = np.random.default_rng(SEED)
+
     # prepare data
     X_train = train_df[feature_cols]
     y_train = train_df[target_cols].to_numpy()
@@ -502,8 +758,17 @@ def fit_and_predict(
     y_pred = model.predict(X_test)
 
     # predict_noisy
-    noise_light = np.random.normal(loc=0.0, scale=0.01 * X_test.std(), size=len(X_test))
-    noise_strong = np.random.normal(loc=0.0, scale=0.1 * X_test.std(), size=len(X_test))
+    noise_light = rng.normal(
+        loc=0.0,
+        scale=0.01 * X_test.std().values,
+        size=X_test.shape,
+    )
+
+    noise_strong = rng.normal(
+        loc=0.0,
+        scale=0.1 * X_test.std().values,
+        size=X_test.shape,
+    )
 
     y_pred_noise_light = model.predict(X_test + noise_light)
     y_pred_noise_strong = model.predict(X_test + noise_strong)
@@ -511,8 +776,12 @@ def fit_and_predict(
     # normalize to distribution
     if task_type == "composition":
         y_pred = normalize_predictions_to_simplex(y_pred)
-        y_pred_noise_light = normalize_predictions_to_simplex(y_pred_noise_light)
-        y_pred_noise_strong = normalize_predictions_to_simplex(y_pred_noise_strong)
+        y_pred_noise_light = normalize_predictions_to_simplex(
+            y_pred_noise_light
+        )
+        y_pred_noise_strong = normalize_predictions_to_simplex(
+            y_pred_noise_strong
+        )
 
     return model, y_test, y_pred, y_pred_noise_light, y_pred_noise_strong
 
@@ -552,18 +821,33 @@ def run_experiment_suite(
 
             print(f"HPO for {model_name}")
             # HPO (returns best model)
-            model, best_params, _ = get_model_fn(
-                X_train, y_train, X_val, y_val
+            model, best_params, _, val_result = get_model_fn(
+                X_train, y_train, X_val, y_val, class_names, task_type
             )
 
             print(f"Best params: {best_params}")
+            assert (
+                val_result["y_pred"] is not None
+            ), "Validation predictions missing"
+
+            val_preds_df = save_predictions(
+                test_df=val_df,
+                y_true=y_val,
+                y_pred=val_result["y_pred"],
+                target_cols=target_cols,
+            )
 
             for test_name, test_df in test_sets.items():
                 print(f"Training with test set: {test_name}")
 
                 # fit + predict
-                model, y_true, y_pred, \
-                y_pred_noise_light, y_pred_noise_strong = fit_and_predict(
+                (
+                    model,
+                    y_true,
+                    y_pred,
+                    y_pred_noise_light,
+                    y_pred_noise_strong,
+                ) = fit_and_predict(
                     model,
                     train_df,
                     test_df,
@@ -573,19 +857,17 @@ def run_experiment_suite(
                 )
 
                 # evaluate
-                if task_type == "composition":
-                    result = evaluate_composition_metrics(
-                        y_true, y_pred, class_names
-                    )
-                elif task_type == "change":
-                    result = evaluate_change_metrics(
-                        y_true, y_pred, class_names
-                    )
-                else:
-                    raise ValueError(f"Unknown task_type: {task_type}")
+                result = evaluate_metrics(
+                    y_true, y_pred, class_names, task_type
+                )
 
-                # evaluate
-                # result = evaluate_all_metrics(y_true, y_pred, class_names)
+                stress_result_light = evaluate_metrics(
+                    y_true, y_pred_noise_light, class_names, task_type
+                )
+
+                stress_result_strong = evaluate_metrics(
+                    y_true, y_pred_noise_strong, class_names, task_type
+                )
 
                 preds_df = save_predictions(
                     test_df=test_df,
@@ -601,8 +883,12 @@ def run_experiment_suite(
                     feature_set_name=feature_set_name,
                     test_name=test_name,
                     params=best_params,
-                    metrics=result,
+                    result=result,
+                    stress_result_light=stress_result_light,
+                    stress_result_strong=stress_result_strong,
                     preds_df=preds_df,
+                    val_result=val_result["metrics"],
+                    val_preds_df=val_preds_df,
                     experiment_id=experiment_id,
                     root_dir=root_dir,
                     metadata={
@@ -623,7 +909,7 @@ def run_experiment_suite(
                     "n_features": len(feature_cols),
                 }
 
-                row.update(result["overall"])  # 👈 works for both tasks
+                row.update(result["overall"])
 
                 all_results.append(row)
 
@@ -636,8 +922,12 @@ def log_experiment(
     feature_set_name,
     test_name,
     params,
-    metrics,
+    result,
+    stress_result_light,
+    stress_result_strong,
     preds_df,
+    val_result,
+    val_preds_df,
     experiment_id,
     task_type,
     metadata=None,
@@ -663,9 +953,11 @@ def log_experiment(
         "test_set": test_name,
         "timestamp": timestamp,
         "params": params,
-        "metrics": metrics,
+        "result": result,
+        "stress_result_light": stress_result_light,
+        "stress_result_strong": stress_result_strong,
         "metadata": metadata or {},
-        "task_type": task_type
+        "task_type": task_type,
     }
 
     model_filename = filename.replace(".json", ".pkl")
@@ -675,6 +967,13 @@ def log_experiment(
         pickle.dump(model, f)
 
     log_data["model_path"] = model_path
+
+    log_data["val_result"] = val_result
+    val_preds_filename = filename.replace(".json", "_val_preds.csv")
+    val_preds_path = os.path.join(model_dir, val_preds_filename)
+
+    val_preds_df.to_csv(val_preds_path, index=False)
+    log_data["val_predictions_path"] = val_preds_path
 
     preds_filename = filename.replace(".json", "_preds.csv")
     preds_path = os.path.join(model_dir, preds_filename)
@@ -691,7 +990,7 @@ def log_experiment(
 def save_predictions(test_df, y_true, y_pred, target_cols):
     assert y_pred.shape == y_true.shape
 
-    df = test_df[['centroid_x', 'centroid_y']].copy()
+    df = test_df[["centroid_x", "centroid_y"]].copy()
     pred_cols = [f"pred_{col}" for col in target_cols]
     true_cols = [f"true_{col}" for col in target_cols]
 
