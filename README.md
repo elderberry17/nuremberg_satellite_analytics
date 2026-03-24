@@ -1,63 +1,327 @@
-## 1. Download the images
+# UTN Machine Learning Final Project  
+## Mapping Urban Change in Nuremberg with Sentinel-2, ESA WorldCover, and Explainable Tabular Machine Learning
 
-Resource: https://esa-worldcover.org/en
+This project is an end-to-end geospatial machine learning pipeline for analyzing and forecasting urban land-cover change in Nuremberg, Germany. The system uses ESA WorldCover as the label source and Sentinel-2 imagery as the predictor source, converts both into aligned grid-based tabular data, trains multiple machine learning models for both land-cover change and next-year composition forecasting, evaluates them under a spatial hold-out design, and serves the results through an interactive Streamlit dashboard.
 
-1. Run the ```sentinel_raw_download.py``` and  the ```esa_labels_download.py``` scripts. ***Specify the parameters in download_config.py***
+The final product is designed as an MSc-level machine learning and remote sensing project with an emphasis on:
+- interpretable and defensible modeling choices,
+- spatially aware evaluation,
+- explainability for non-expert users,
+- uncertainty communication,
+- and a polished interactive front end.
 
-I would recommend to download date-by-date if you know the specific dates you need. Or you may check them in ```config.py```.
+## Project Team
 
-It is recommended to download the data to the root directory of the project.
+This project was developed by:
 
-2. Run the alignment.py script to align the labels from 2021 with the labels from 2020 and raw images with the labels from 2021. Specify parameters in ```alignment_config.py```.
+- Alexei Bezgin  
+- Aryan Shams Ansari  
+- Azariah Asafo Agyei  
+- Emir Balci  
+- Soban Mohammed Khalid  
 
-## 2. Feature extraction
+using Python version 3.11.9 and the libraries listed in `requirements.txt`. 
+The project is structured to be fully reproducible, with all data processing, modeling, evaluation, and visualization steps included in the repository.
 
-Images are being downloaded in .tif files. We do not convert them to RGB format, because we need more bands for creating tabular data. 
+All five members contributed equally to the project.
 
-1. Baseline feature extraction pipeline. ```feature_engineering/build_tables.py```
+---
 
-Basically extracts features from the first 3 bands R (B04), G (B03), B (B02).
+## Project Overview
 
-2. Extended feature extraction pipeline. ```feature_engineering/build_tables_extended.py```
+The workflow represents Nuremberg as a regular 250 m grid. For each grid cell, the project:
+1. computes land-cover composition labels from ESA WorldCover,
+2. extracts spectral summary features and indices from Sentinel-2,
+3. builds a modeling table for supervised learning,
+4. trains multiple models for two forecasting formulations,
+5. evaluates them with both standard and change-aware metrics,
+6. generates full-coverage app predictions,
+7. and visualizes the outputs in a Streamlit dashboard.
 
-Extracts all the features from the baseline approach + extra features employing B08 and B011 bands of satellite imagery.
+The four target land-cover classes are:
+- built_up
+- vegetation
+- water
+- other
 
+Two prediction tasks are supported:
+- **Delta prediction**: predict class-wise change between the anchor year and the target year
+- **T+1 prediction**: predict next-year class composition directly
 
-As the result, for each spatial unit of the image (basically a grid cell) we get features (described in ```config.py```) and the labels distributions for 2020 and 2021 (so we can calculate the diff).
+The current training pipeline supports:
+- Elastic Net (Linear Regression with L1 and L2 regularization)
+- Random Forest (Ensemble of Decision Trees with bootstrap aggregation)
+- Gradient Boosting (Ensemble of Decision Trees with sequential boosting)
 
-## 3. How did we choose dates?
+Optional hyper-parameter optimization is also supported through Optuna.
 
-For the first task we need to predict t+1 timestamp given data at t. So we decided to use raw data from 2020 as the input to train and labels from 2021 as the targets to train.
+---
 
-Since one raw in the tables in a spatial unit, not a picture itself, we're getting a lot of rows from each picture. So we limited the number of pictures. We use 3 pictures for 3 seasons (Spring, Summer, Autumn) from 2020 to train. We filter cloudness by 5 % threshold.
+## Repository Structure
 
-Due to the time bounds of the data we don't work with time-wise test splits, focusing on spatial-wise splits and testing 
+```text
+project/
+├── config/
+│   └── project_config.yaml
+├── data/
+│   ├── raw/
+│   ├── interim/
+│   └── processed/
+├── artifacts/
+│   ├── metrics/
+│   ├── models/
+│   ├── predictions/
+│   ├── evaluation/
+│   └── paper_figures/
+├── src/
+│   ├── 01_build_grid.py
+│   ├── 02_prepare_worldcover_labels.py
+│   ├── 03_extract_sentinel_features.py
+│   ├── 04_build_modeling_table.py
+│   ├── 05_train_models_multi_hpo.py
+│   ├── 06_evaluate_models_multi.py
+│   ├── 07_generate_app_predictions_multi.py
+│   ├── 08_make_paper_figures.py
+│   └── common.py
+├── app/
+│   └── streamlit_app.py
+├── requirements.txt
+└── README.md
+```
 
-```test_spatial```. From the same dates in 2020 we randomly pick a part for the test. So model sees only specific regions of train images and never sees the regions which we put in train. It indicates the robustness of models to spatial changes.
+---
 
-This logic is implemented in ```evaluation/generate_test.py``` and in the ```notebooks/baseline.ipynb```. Emir is working on moving the logic from .ipynb to more handy scripts.
+## Final Pipeline Stages
 
-## 4. Why 3 labels and why distributions?
+The workflow represents Nuremberg as a regular 250 m grid. For each grid cell, the project:
+### 1. Build the spatial analysis grid
 
-We decided tp simplify the labels structure and focus on the questions of the urban/nature proportion within the city and the dynamics of this rivarly. So we only use "urban" label, which is "built_up", "water" (all water bodies) and "vegetation" (all greenlands). 
+Creates the regular Nuremberg grid used as the core spatial unit of analysis.
+```bash
+python src/01_build_grid.py
+```
 
-We also use the distribution to generate labels for whole spatial units. So we do not make predictions pixel-by-pixel. But take a whole spatial unit (NxN grid cell) as an input and predict the distribution of these 3 classes within the unit.
+### 2. Prepare ESA WorldCover labels
+Processes ESA WorldCover data to compute class-wise composition labels for each grid cell and year. Extracts yearly class proportions for each grid cell and computes change labels.
+```bash
+python src/02_prepare_worldcover_labels.py
+```
 
-Same logic for the task2, where we predict the change in these distributions' shifts.
+### 3. Extract Sentinel-2 features
+Extracts spectral summary features and indices from Sentinel-2 imagery for each grid cell and year. Reads Sentinel SAFE scenes, extracts band summaries and spectral indices per grid cell, and saves the predictor table.
+```bash
+python src/03_extract_sentinel_features.py
+```
+### 4. Build the modeling table
+Combines the features and labels into a single modeling table for supervised learning. Merges spatial features, labels, and Sentinel summaries into the final supervised learning table.
+```bash
+python src/04_build_modeling_table.py
+```
+### 5. Train machine learning models
+Trains multiple models for both delta and T+1 prediction formulations, with optional hyper-parameter optimization. Trains the multi-output models for both delta and T+1 tasks using a spatial block hold-out. Optional HPO can be enabled in the config.
+```bash
+python src/05_train_models_multi_hpo.py
+```
+### 6. Evaluate the trained models
+Evaluates the trained models using both standard regression metrics and change-aware metrics under a spatial hold-out design. Computes standard regression metrics, change-aware metrics, missingness stress tests, and random-forest uncertainty outputs.
+```bash
+python src/06_evaluate_models_multi.py
+```
+### 7. Generate app-ready predictions
+Runs the selected trained models over all grid cells and exports the final GeoJSON for the front end.
+```bash
+python src/07_generate_app_predictions_multi.py
+```
+### 8. Generate paper figures
+Creates visualizations for the final report and presentation. Creates evaluation and diagnostics figures for the technical report or IEEE paper.
+```bash
+python src/08_make_paper_figures.py
+```
+### 9. Launch the Streamlit dashboard
+Serves the predictions and evaluation results through an interactive Streamlit dashboard.
+```bash
+streamlit run app/streamlit_app.py
+```
+---
+## How to Run the Project
 
-## 5. Modeling 
+### Step 1: Create and activate a virtual environment
+#### On Windows:
+```bash
+python -m venv .venv
+.venv\Scripts\activate
+```
+#### On Linux or MacOS:
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
 
-The ```models``` directory contains all the utils for reproducible and reliable experiments running. We split train dataframe to train and val parts with spatial-split approach. Then we search for the optimal HP with Optuna framework.
+### Step 2: Install dependencies
+```bash
+pip install -r requirements.txt
+```
+### Step 3: Verify the config paths
+Open:
+`config/project_config.yaml` 
 
-We experiment with a wide range of 8 different classical ML algorithms in order to define the most suitable sor this specific task and data.
+and make sure the paths for:
 
+- boundary data
+- WorldCover rasters
+- Sentinel SAFE folders
+- processed outputs
+- artifact folders
 
-## 6. Evaluation
+all match your local machine.
 
-The ```evaluation``` directory contains the function to generate spatial-wise train/val split (the same is used to cut the test part off). And script ```metrics.py``` which generates comprehensive reports from the training results.
+### Step 4: Run the pipeline stages in order
+```bash
+cd src
+python 01_build_grid.py
+python 02_prepare_worldcover_labels.py
+python 03_extract_sentinel_features.py
+python 04_build_modeling_table.py
+python 05_train_models_multi_hpo.py
+python 06_evaluate_models_multi.py
+python 07_generate_app_predictions_multi.py
+python 08_make_paper_figures.py
 
-We also simulate stress testing of the trained models putting light (0.01 from features std) and strong (0.1 from features std) gaussian noise to the features of X_test.
+cd ../app
+streamlit run streamlit_app.py
+```
 
-## 7. Conclusion
+---
 
-This was our first approach. Eventually we collectively agreed on switching to the different one. Nevertheless we value the work done in the this direction as well, and it motivated us to publish this code alongside the final one.
+## Key Methodological Choices
+### Grid-based analysis
+
+The city is represented as regular spatial cells rather than parcels or raw pixels. 
+This makes the problem well-structured for tabular machine learning and ensures that features, labels, predictions, and app outputs are all aligned to the same spatial unit.
+
+### Interpretable tabular features
+
+The predictor set consists of spectral summary statistics and indices rather than raw pixel values or complex deep features.
+This allows for more interpretable models and easier debugging, while still capturing the relevant spectral information for land-cover classification.
+Instead of training end-to-end image models, the project summarizes Sentinel-2 imagery into physically meaningful statistics:
+
+- band medians,
+- quartiles,
+- standard deviations,
+- NDVI,
+- NDWI,
+- NDBI.
+
+This supports interpretability and aligns with the project’s requirement for explainable modeling.
+
+### Dual prediction formulation
+
+The project supports two prediction formulations:
+
+- direct change forecasting through delta targets,
+- direct next-year composition forecasting through T+1 targets.
+
+This makes it possible to compare whether change is easier to model directly or indirectly through next-year composition.
+
+### Spatially aware evaluation
+
+The data are not split randomly. Instead, training and test sets are created using spatial blocks so that nearby grid cells do not leak information across the split. This produces a more realistic estimate of generalization.
+
+### Optional hyper-parameter optimization
+
+The training script supports optional HPO through Optuna. HPO is performed only within the outer training set by using an inner spatial validation split. The held-out outer test set remains untouched until final evaluation.
+
+### Responsible deployment
+
+The Streamlit app includes:
+
+- observed and predicted layers,
+- hotspot ranking,
+- multiple basemaps,
+- uncertainty overlays,
+- interpretation guidance,
+- and explicit warnings about limitations and non-decision use.
+
+---
+
+## Main Output Artifacts
+
+After a full run, the project produces the following important outputs:
+
+### Processed data
+- `grid.geojson`
+- `labels_table.parquet`
+- `sentinel_features.parquet`
+- `modeling_table.parquet`
+
+### Training artifacts
+- trained model bundles in `artifacts/models/`
+- per-model metric CSVs in `artifacts/metrics/`
+- prediction Parquets in `artifacts/predictions/`
+- split manifest for reproducibility
+
+### Evaluation artifacts
+- `dual_evaluation_summary.csv`
+- stress-test CSVs
+- random-forest uncertainty table
+
+### App artifacts
+- final app prediction GeoJSON for Streamlit
+
+### Paper/report artifacts
+- evaluation plots and paper-ready figures in `artifacts/paper_figures/`
+
+---
+
+## Requirements
+
+Install all required packages with:
+
+```bash
+pip install -r requirements.txt
+```
+The project depends on:
+
+- python == 3.11.9
+- geopandas == 1.1.3
+- rasterio == 1.4.4
+- numpy == 2.4.3
+- pandas == 3.0.1
+- scikit-learn == 1.8.0
+- optuna == 4.7.0
+- matplotlib == 3.10.8
+- plotly == 6.6.0
+- pydeck == 0.9.1
+- streamlit == 1.55.0
+- shapely == 2.1.2
+- pyyaml == 6.0.3
+- joblib == 1.5.2
+
+If you encounter installation issues on Windows, install geospatial packages carefully and ensure GDAL-compatible wheels are available in your environment.
+
+---
+
+### Intended Use
+
+This system is intended for:
+
+- exploratory urban analysis,
+- land-cover change screening,
+- academic demonstration,
+- model comparison and explainability,
+- educational and planning-oriented visualization.
+
+It is not intended for:
+
+- legal boundary interpretation,
+- parcel-level enforcement,
+- cadastral decisions,
+- or high-stakes policy decisions without further validation.
+
+---
+
+## Acknowledgment
+
+This project was developed as part of the Machine Learning Course at the University of Technology Nuremberg(UTN), Germany as a Final Project and integrates remote sensing, tabular machine learning, spatial evaluation, uncertainty analysis, and interactive visualization into one reproducible end-to-end workflow.
+
+Special thanks to the course instructors Prof. Josif Grabocka and Prof. Yuki Asano for their guidance and feedback throughout the project development process.
