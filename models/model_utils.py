@@ -14,6 +14,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import Ridge
+from sklearn.linear_model import ElasticNet
 from sklearn.multioutput import MultiOutputRegressor
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.neighbors import KNeighborsRegressor
@@ -124,6 +125,68 @@ def get_ridge_hpo_model(
             ("imputer", SimpleImputer(strategy="median")),
             ("scaler", StandardScaler()),
             ("regressor", Ridge(**study.best_params)),
+        ]
+    )
+
+    return best_model, study.best_params, study, best_result
+
+
+def get_elastic_hpo_model(
+    X_train,
+    y_train,
+    X_val,
+    y_val,
+    class_names,
+    task_type="composition",
+    n_trials=20,
+    seed=42,
+):
+    best_result = {"score": float("inf"), "metrics": None, "y_pred": None}
+
+    def objective(trial):
+        nonlocal best_result
+
+        alpha = trial.suggest_float("alpha", 1e-4, 100, log=True)
+
+        model = Pipeline(
+            [
+                ("imputer", SimpleImputer(strategy="median")),
+                ("scaler", StandardScaler()),
+                ("regressor", ElasticNet(alpha=alpha)),
+            ]
+        )
+
+        model.fit(X_train, y_train)
+        y_pred = model.predict(X_val)
+
+        if task_type == "composition":
+            y_pred = normalize_predictions_to_simplex(y_pred)
+
+        metrics = evaluate_metrics(y_val, y_pred, class_names, task_type)
+
+        score = (
+            metrics["overall"]["rmse_macro"]
+            if task_type == "composition"
+            else 1 - metrics["overall"]["direction_accuracy"]
+        )
+
+        if score < best_result["score"]:
+            best_result.update(
+                {"score": score, "metrics": metrics, "y_pred": y_pred}
+            )
+
+        return score
+
+    study = optuna.create_study(
+        direction="minimize", sampler=optuna.samplers.TPESampler(seed=seed)
+    )
+    study.optimize(objective, n_trials=n_trials)
+
+    best_model = Pipeline(
+        [
+            ("imputer", SimpleImputer(strategy="median")),
+            ("scaler", StandardScaler()),
+            ("regressor", ElasticNet(**study.best_params)),
         ]
     )
 
