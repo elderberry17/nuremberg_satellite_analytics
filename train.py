@@ -5,6 +5,7 @@ from models.model_utils import (
 from evaluation.generate_test import *
 from models.model_utils import (
     get_ridge_hpo_model,
+    get_elastic_hpo_model,
     get_rf_hpo_model,
     get_xgb_hpo_model,
     get_lgbm_hpo_model,
@@ -23,9 +24,9 @@ from config import (
     FEATURE_COLS_BASELINE_EXTENDED,
     TARGET_COLS2020,
     TARGET_COLS2021,
-    TARGET_COLS_TPLUS1_J, 
+    TARGET_COLS_TPLUS1_J,
     TARGET_COLS_DELTA_J,
-    FEATURE_COLS_J
+    FEATURE_COLS_J,
 )
 
 """
@@ -39,7 +40,7 @@ def main():
     (
         train_df,
         test_spatial,
-    ) = read_dataset("./data/delta_j/")
+    ) = read_dataset("./datasets/change/")
 
     # only spatial so far
     test_sets = {
@@ -49,7 +50,8 @@ def main():
     root_dir = "results_repro"
 
     model_getters = {
-        "ridge": get_ridge_hpo_model,
+        # "ridge": get_ridge_hpo_model,
+        "elastic": get_elastic_hpo_model,
         "rf": get_rf_hpo_model,
         "xgb": get_xgb_hpo_model,
         "lgbm": get_lgbm_hpo_model,
@@ -69,7 +71,7 @@ def main():
     train_df, val_df = split_train_val(train_df)
 
     print(train_df.columns)
-    print('==' * 50)
+    print("==" * 50)
     print(val_df.columns)
 
     # model, best_params, study = get_ridge_hpo_model()
@@ -82,8 +84,8 @@ def main():
         target_cols=TARGET_COLS_DELTA_J,
         class_names=class_names,
         model_getters=model_getters,
-        task_type="composition",
-        root_dir=root_dir
+        task_type="change",
+        root_dir=root_dir,
     )
 
 
