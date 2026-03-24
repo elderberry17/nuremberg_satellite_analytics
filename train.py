@@ -13,13 +13,19 @@ from models.model_utils import (
     get_dt_hpo_model,
     get_mlp_hpo_model,
 )
-from feature_engineering.generate_datasets import read_dataset, split_train_val
+from feature_engineering.generate_datasets import (
+    read_dataset,
+    split_train_val,
+)
 
 from config import (
     FEATURE_COLS_BASELINE,
     FEATURE_COLS_BASELINE_EXTENDED,
     TARGET_COLS2020,
     TARGET_COLS2021,
+    TARGET_COLS_TPLUS1_J, 
+    TARGET_COLS_DELTA_J,
+    FEATURE_COLS_J
 )
 
 """
@@ -30,14 +36,17 @@ TODO:
 
 
 def main():
-    train_df, test_spatial, _, test_spatial_temporal = read_dataset(
-        "./datasets_kernel101_stride101"
-    )
+    (
+        train_df,
+        test_spatial,
+    ) = read_dataset("./data/delta_j/")
 
+    # only spatial so far
     test_sets = {
         "spatial": test_spatial,
-        "spatial_temporal": test_spatial_temporal,
     }
+
+    root_dir = "results_repro"
 
     model_getters = {
         "ridge": get_ridge_hpo_model,
@@ -51,21 +60,30 @@ def main():
     }
 
     feature_sets = {
-        "baseline": FEATURE_COLS_BASELINE,
-        "extended": FEATURE_COLS_BASELINE_EXTENDED,
+        # "baseline": FEATURE_COLS_BASELINE,
+        # "extended": FEATURE_COLS_BASELINE_EXTENDED,
+        "extended": FEATURE_COLS_J
     }
-    class_names = ["urban", "water", "vegetation"]
+
+    class_names = ["urban", "vegetation", "water", "other"]
     train_df, val_df = split_train_val(train_df)
 
+    print(train_df.columns)
+    print('==' * 50)
+    print(val_df.columns)
+
     # model, best_params, study = get_ridge_hpo_model()
+    # specify task_type!!
     run_experiment_suite(
         train_df=train_df,
         val_df=val_df,
         test_sets=test_sets,
         feature_sets=feature_sets,
-        target_cols=TARGET_COLS2021,
+        target_cols=TARGET_COLS_DELTA_J,
         class_names=class_names,
         model_getters=model_getters,
+        task_type="composition",
+        root_dir=root_dir
     )
 
 

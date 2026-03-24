@@ -43,3 +43,17 @@ FEATURE_COLS_BASELINE_EXTENDED = ['x', 'y', 'x_norm', 'y_norm',
        'min_b08', 'max_b08', 'center_b11', 'mean_b11', 'std_b11', 'min_b11',
        'max_b11', 'mean_NIR', 'mean_SWIR', 'mean_NDVI', 'mean_NDBI',
        'std_NDVI', 'cloud_pct']
+
+
+FEATURE_COLS_J = ['centroid_x', 'centroid_y', 'area_m2', 'curr_label__built_up',
+       'curr_label__vegetation', 'curr_label__water', 'curr_label__other',
+       'class_sum', 'B02_median', 'B02_p25', 'B02_p75', 'B02_std',
+       'B03_median', 'B03_p25', 'B03_p75', 'B03_std', 'B04_median', 'B04_p25',
+       'B04_p75', 'B04_std', 'B08_median', 'B08_p25', 'B08_p75', 'B08_std',
+       'B11_median', 'B11_p25', 'B11_p75', 'B11_std', 'B12_median', 'B12_p25',
+       'B12_p75', 'B12_std', 'ndvi_median', 'ndvi_p25', 'ndvi_p75', 'ndvi_std',
+       'ndwi_median', 'ndwi_p25', 'ndwi_p75', 'ndwi_std', 'ndbi_median',
+       'ndbi_p25', 'ndbi_p75', 'ndbi_std', 'swir_used']
+
+TARGET_COLS_TPLUS1_J = ['next_built_up', 'next_vegetation', 'next_water', 'next_other']
+TARGET_COLS_DELTA_J = ['delta_built_up', 'delta_vegetation', 'delta_water', 'delta_other']

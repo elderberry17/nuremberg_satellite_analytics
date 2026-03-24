@@ -16,4 +16,4 @@ __pycache__/
 .idea/
 
 results/
-datasets_kernel101_stride101/
+datasets/

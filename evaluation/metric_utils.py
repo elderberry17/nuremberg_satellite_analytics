@@ -1,4 +1,5 @@
 import numpy as np
+import matplotlib.pyplot as plt
 
 
 def mae(y_true, y_pred):
@@ -52,7 +53,7 @@ def kl_divergence(y_true, y_pred, eps=1e-10):
     return np.mean(np.sum(y_true * np.log(y_true / y_pred), axis=1))
 
 
-def evaluate_all_metrics(y_true, y_pred, class_names):
+def evaluate_composition_metrics(y_true, y_pred, class_names):
     results = {}
 
     # --- overall (macro) ---
@@ -123,3 +124,110 @@ def per_class_direction_accuracy(y_true, y_pred, class_names):
         results[name] = float(np.mean(true_sign == pred_sign))
 
     return results
+
+
+def evaluate_change_metrics(y_true, y_pred, class_names, threshold=1e-3):
+    results = {}
+
+    # --- overall ---
+    results["overall"] = {
+        "mcr": mcr(
+            y_true, y_pred, threshold
+        ),  # missed change rate (recall-like)
+        "fcr": fcr(y_true, y_pred, threshold),  # false change ratio
+        "direction_accuracy": direction_accuracy(y_true, y_pred),
+    }
+
+    # --- per-class ---
+    results["per_class"] = {}
+
+    for i, name in enumerate(class_names):
+        yt = y_true[:, i]
+        yp = y_pred[:, i]
+
+        results["per_class"][name] = {
+            "mcr": mcr(yt, yp, threshold),
+            "fcr": fcr(yt, yp, threshold),
+            "direction_accuracy": float(np.mean(np.sign(yt) == np.sign(yp))),
+        }
+
+    return results
+
+
+def evaluate_metrics(y_true, y_pred, class_names, task_type, **kwargs):
+    if task_type == "composition":
+        return evaluate_composition_metrics(y_true, y_pred, class_names)
+    elif task_type == "change":
+        return evaluate_change_metrics(y_true, y_pred, class_names, **kwargs)
+
+
+def plot_stress_test(
+    result,
+    stress_result_light,
+    stress_result_strong,
+    model_name,
+    save_path,
+    task_type="composition",
+):
+    # --- select metric ---
+    if task_type == "composition":
+        metric_name = "rmse_macro"
+    elif task_type == "change":
+        metric_name = "direction_accuracy"
+    else:
+        raise ValueError(f"Unknown task_type: {task_type}")
+
+    # --- extract values ---
+    values = [
+        result["overall"][metric_name],
+        stress_result_light["overall"][metric_name],
+        stress_result_strong["overall"][metric_name],
+    ]
+
+    labels = ["clean", "light_noise", "strong_noise"]
+
+    # --- plot ---
+    plt.figure(figsize=(6, 4))
+    plt.plot(labels, values, marker="o")
+
+    plt.title(f"Stress Test - {model_name}")
+    plt.xlabel("Noise Level")
+    plt.ylabel(metric_name)
+
+    # invert y-axis for RMSE? (optional)
+    # if task_type == "composition":
+    #     plt.gca().invert_yaxis()
+
+    plt.grid(True)
+    plt.savefig(save_path)
+    plt.close()
+
+
+def save_scatter_pred_vs_true(
+    y_true,
+    y_pred,
+    class_names,
+    model_name,
+    save_path,
+):
+    n_classes = y_true.shape[1]
+
+    plt.figure(figsize=(5 * n_classes, 4))
+
+    for i in range(n_classes):
+        plt.subplot(1, n_classes, i + 1)
+
+        plt.scatter(y_true[:, i], y_pred[:, i], alpha=0.3)
+
+        # perfect prediction line
+        plt.plot([0, 1], [0, 1])
+
+        plt.xlabel("True")
+        plt.ylabel("Pred")
+        plt.title(class_names[i])
+
+    plt.suptitle(f"{model_name} - Pred vs True")
+    plt.tight_layout()
+
+    plt.savefig(save_path)
+    plt.close()
